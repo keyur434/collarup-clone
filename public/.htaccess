@@ -1,0 +1,22 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # XAMPP subdirectory: http://localhost/collarup-clone/public
+    RewriteBase /collarup-clone/public/
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php/$1 [L,QSA]
+</IfModule>
+
+# Upload limits (resume 10 MB; interview video up to 500 MB in app config)
+<IfModule mod_php7.c>
+    php_value upload_max_filesize 512M
+    php_value post_max_size 520M
+    php_value max_execution_time 600
+    php_value max_input_time 600
+</IfModule>
+<IfModule mod_php.c>
+    php_value upload_max_filesize 512M
+    php_value post_max_size 520M
+    php_value max_execution_time 600
+    php_value max_input_time 600
+</IfModule>
