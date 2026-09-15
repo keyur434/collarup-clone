@@ -76,7 +76,7 @@ class AzureOpenAIService
     }
 
     /**
-     * GPT cleanup pass on raw STT (same pattern as magicrete_call_pipeline_2.py).
+     * GPT cleanup pass on raw STT output.
      */
     public function refineTranscript($rawTranscript, $jobContext = [])
     {

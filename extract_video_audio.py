@@ -27,7 +27,7 @@ from pathlib import Path
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".wmv", ".flv", ".mpeg", ".mpg"}
 
-# Telephony cleanup (optional, from magicrete_call_pipeline_2.py)
+# Telephony cleanup (optional)
 STT_AUDIO_FILTERS = (
     "highpass=f=200,lowpass=f=3400,"
     "afftdn=nf=-20,"

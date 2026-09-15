@@ -1,0 +1,13 @@
+storage/temp/*
+storage/logs/*
+storage/videos/*
+storage/resumes/*
+.env
+.env.local
+.env.*.local
+*.log
+
+# Local scripts with credentials — never commit
+magicrete_call_pipeline*.py
+**/sop_v3.py
+**/elevenlabs_stt.py

@@ -176,7 +176,7 @@ cv_summaries (id, candidate_id, source_file_hash, extracted_text,
 
 - [ ] `SttProviderInterface` + ElevenLabs adapter refactor
 - [ ] Audio chunking in PHP (ffmpeg segments, merge transcripts)
-- [ ] Optional `SarvamService` (port from `magicrete_call_pipeline_2.py`)
+- [ ] Optional `SarvamService` (local reference script — not in repo)
 - [ ] A/B test ElevenLabs vs Sarvam on 10 real recordings
 - [ ] `STT_PROVIDER=elevenlabs|sarvam` config
 
@@ -242,5 +242,5 @@ See conversation summary; planning figure **₹105 / 90-min interview** at USD×
 ## Related files
 
 - `AGENTS.md` — repo orientation for AI agents
-- `magicrete_call_pipeline_2.py` — Python reference pipeline (Sarvam, chunking, enhanced analysis)
+- Local-only Python reference pipeline (Sarvam, chunking) — gitignored, not in repo
 - `config/services.php` — external service configuration
