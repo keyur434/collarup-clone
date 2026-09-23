@@ -1,0 +1,5 @@
+About your company
+
+Replace this text in Settings → Integrations or edit database/defaults/company_about.txt before running database/migrations/010_company_about_seed.php.
+
+Describe your organization, products, and culture so job posts and candidate communications stay on-brand.
