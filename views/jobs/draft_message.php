@@ -1,4 +1,10 @@
-<?php $pageBack = ['url' => url('jobs'), 'label' => 'Job Roles']; ?>
+<?php
+$isEdit = ($mode ?? 'create') === 'edit';
+$crumbLeaf = $isEdit ? 'Edit Email Templates' : 'Draft Messages';
+$breadcrumbs = !empty($job['id'])
+    ? nav_trail_job($job, $crumbLeaf)
+    : nav_trail_dashboard('Job Roles', url('jobs'), $crumbLeaf);
+?>
 <div class="page-header">
     <div>
         <h1><?= ($mode ?? 'create') === 'edit' ? 'Edit Email Templates' : 'Draft Messages' ?></h1>

@@ -13,5 +13,8 @@
         </div>
         <div class="form-group"><label>Years of experience</label><input type="number" step="0.1" min="0" name="years_experience" id="parsed_years_experience" placeholder="e.g. 5"></div>
         <div class="form-group"><label>Current company</label><input name="current_company" id="parsed_current_company" placeholder="Employer"></div>
+        <div class="form-group"><label>Current CTC</label><input name="current_ctc" id="parsed_current_ctc" placeholder="e.g. 18 LPA" autocomplete="off"></div>
+        <div class="form-group"><label>Expected CTC</label><input name="expected_ctc" id="parsed_expected_ctc" placeholder="e.g. 22 LPA" autocomplete="off"></div>
     </div>
+    <p class="hint" style="margin:8px 0 0;font-size:0.78rem">CTC is stored on this job application (used in report-ready emails).</p>
 </div>

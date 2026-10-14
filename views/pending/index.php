@@ -1,7 +1,4 @@
-<?php
-$pageBack = null;
-$breadcrumbs = [['label' => 'Pending Recordings']];
-?>
+<?php $breadcrumbs = nav_trail_dashboard('Pending Recordings'); ?>
 
 <div class="page-header">
     <div>
@@ -18,13 +15,13 @@ $breadcrumbs = [['label' => 'Pending Recordings']];
 <?php endif; ?>
 
 <div class="table-card">
-    <table class="data-table">
+    <table class="data-table" data-sortable>
         <thead>
             <tr>
-                <th>File</th>
-                <th>Recorded</th>
-                <th>Size</th>
-                <th>Status</th>
+                <?= th_sort('File', 'string') ?>
+                <?= th_sort('Recorded', 'date') ?>
+                <?= th_sort('Size', 'number') ?>
+                <?= th_sort('Status', 'string') ?>
                 <th>Assign</th>
             </tr>
         </thead>
@@ -34,8 +31,8 @@ $breadcrumbs = [['label' => 'Pending Recordings']];
             <?php else: foreach ($recordings as $r): ?>
             <tr>
                 <td data-label="File"><?= e($r['original_filename'] ?: $r['drive_item_id']) ?></td>
-                <td data-label="Recorded"><?= e(format_date($r['recorded_at'] ?: $r['created_at'])) ?></td>
-                <td data-label="Size"><?= $r['file_size_bytes'] ? number_format($r['file_size_bytes'] / 1048576, 1) . ' MB' : '—' ?></td>
+                <td data-label="Recorded" data-sort-value="<?= e($r['recorded_at'] ?: $r['created_at']) ?>"><?= e(format_date($r['recorded_at'] ?: $r['created_at'])) ?></td>
+                <td data-label="Size" data-sort-value="<?= (int) ($r['file_size_bytes'] ?? 0) ?>"><?= $r['file_size_bytes'] ? number_format($r['file_size_bytes'] / 1048576, 1) . ' MB' : '—' ?></td>
                 <td data-label="Status"><span class="badge badge-gray"><?= e(str_replace('_', ' ', $r['status'])) ?></span></td>
                 <td data-label="Assign">
                     <?php if ($r['status'] === 'pending_assignment'): ?>

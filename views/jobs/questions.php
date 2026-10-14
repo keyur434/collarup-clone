@@ -1,4 +1,10 @@
-<?php $pageBack = ['url' => url('jobs'), 'label' => 'Job Roles']; ?>
+<?php
+$isEdit = ($mode ?? 'create') === 'edit';
+$crumbLeaf = $isEdit ? 'Edit Questions' : 'Interview Questions';
+$breadcrumbs = !empty($job['id'])
+    ? nav_trail_job($job, $crumbLeaf)
+    : nav_trail_dashboard('Job Roles', url('jobs'), $crumbLeaf);
+?>
 <div class="page-header">
     <div>
         <h1><?= ($mode ?? 'create') === 'edit' ? 'Edit Questions' : 'Interview Questions' ?></h1>
@@ -44,8 +50,12 @@
         <?php else: ?>
         <a href="<?= url('jobs/edit/' . $job['id'] . '/pipeline') ?>" class="btn btn-outline">Back</a>
         <?php endif; ?>
-        <button type="submit" class="btn btn-primary"><?= ($mode ?? 'create') === 'edit' ? 'Next' : 'Next' ?></button>
-        <?php if (($mode ?? 'create') === 'edit'): ?><button type="submit" name="skip" value="1" class="btn btn-outline">Skip</button><?php endif; ?>
+        <button type="submit" class="btn btn-primary">Next</button>
+        <?php if (($mode ?? 'create') === 'create'): ?>
+        <button type="submit" name="skip_questions" value="1" class="btn btn-outline">Skip (optional)</button>
+        <?php elseif (($mode ?? 'create') === 'edit'): ?>
+        <button type="submit" name="skip" value="1" class="btn btn-outline">Skip</button>
+        <?php endif; ?>
     </div>
 </form>
 <?php if (($mode ?? 'create') === 'edit'): ?>

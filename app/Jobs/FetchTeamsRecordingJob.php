@@ -21,9 +21,20 @@ class FetchTeamsRecordingJob
             $queue = new QueueService();
             $queue->push('AnalyzeInterview', ['interview_id' => $interviewId]);
         } catch (RecordingNotReadyException $e) {
-            $teams->deferRecordingFetch($interviewId, 30);
+            $when = $teams->deferRecordingFetchRescheduleUtc($interviewId, 30);
+            throw new QueueRescheduleException($e->getMessage(), $when);
+        } catch (RuntimeException $e) {
+            $msg = $e->getMessage();
+            $retryable = stripos($msg, 'IO error') !== false
+                || stripos($msg, 'not found') !== false
+                || stripos($msg, 'download failed') !== false
+                || stripos($msg, 'not ready') !== false;
+            if ($retryable) {
+                $when = $teams->deferRecordingFetchRescheduleUtc($interviewId, 45);
+                throw new QueueRescheduleException($msg, $when);
+            }
             db()->update('interviews', ['recording_fetch_state' => 'waiting'], 'id = :id', ['id' => $interviewId]);
-            return;
+            throw $e;
         }
     }
 }

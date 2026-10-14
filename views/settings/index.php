@@ -1,4 +1,15 @@
-<?php $pageBack = ['url' => url('settings'), 'label' => 'Settings']; ?>
+<?php
+$settingsTab = $type ?? 'departments';
+if ($settingsTab === 'integrations') {
+    $breadcrumbs = nav_trail_dashboard('Settings', url('settings'), 'Integrations');
+} elseif ($settingsTab === 'locations') {
+    $breadcrumbs = nav_trail_dashboard('Settings', url('settings'), 'Countries / States / Cities');
+} elseif ($settingsTab !== 'departments' && isset($types[$settingsTab])) {
+    $breadcrumbs = nav_trail_dashboard('Settings', url('settings'), $types[$settingsTab]['label']);
+} else {
+    $breadcrumbs = nav_trail_dashboard('Settings');
+}
+?>
 
 <div class="page-header">
     <div>
@@ -85,7 +96,7 @@
         <?php if ($type === 'countries'): ?>
         <div class="form-group"><label>Code</label><input name="code" maxlength="5"></div>
         <?php endif; ?>
-        <?php if ($type === 'seniority' || $type === 'experience' || $type === 'skills'): ?>
+        <?php if ($type === 'seniority' || $type === 'experience' || $type === 'skills' || $type === 'job-titles'): ?>
         <div class="form-group"><label>Sort order</label><input type="number" name="sort_order" value="99"></div>
         <?php endif; ?>
         <?php if ($type === 'experience'): ?>

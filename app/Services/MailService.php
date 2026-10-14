@@ -14,9 +14,14 @@ class MailService
         return !empty($this->config['host']) && !empty($this->config['from_email']);
     }
 
-    public function send($to, $subject, $htmlBody, $textBody = '')
+    public function send($to, $subject, $htmlBody, $textBody = '', array $cc = [])
     {
         if (!$this->isConfigured()) {
+            return false;
+        }
+        $toList = $this->normalizeEmails($to);
+        $ccList = $this->normalizeEmails($cc);
+        if (empty($toList)) {
             return false;
         }
         if ($textBody === '') {
@@ -24,7 +29,7 @@ class MailService
         }
 
         if (!empty($this->config['host']) && $this->config['host'] !== 'mail') {
-            return $this->sendSmtp($to, $subject, $htmlBody, $textBody);
+            return $this->sendSmtp($toList, $subject, $htmlBody, $textBody, $ccList);
         }
 
         $headers = [
@@ -33,10 +38,14 @@ class MailService
             'From: ' . $this->formatAddress($this->config['from_email'], $this->config['from_name']),
             'Reply-To: ' . $this->config['from_email'],
         ];
-        return @mail($to, $subject, $htmlBody, implode("\r\n", $headers));
+        if (!empty($ccList)) {
+            $headers[] = 'Cc: ' . implode(', ', $ccList);
+        }
+
+        return @mail(implode(', ', $toList), $subject, $htmlBody, implode("\r\n", $headers));
     }
 
-    private function sendSmtp($to, $subject, $htmlBody, $textBody)
+    private function sendSmtp(array $toList, $subject, $htmlBody, $textBody, array $ccList = [])
     {
         $host = $this->config['host'];
         $port = (int) $this->config['port'];
@@ -57,14 +66,14 @@ class MailService
         }
 
         $this->smtpExpect($socket, 220);
-        $this->smtpCmd($socket, 'EHLO collarup.local', 250);
+        $this->smtpCmd($socket, 'EHLO talentpulse.local', 250);
 
         if ($port === 587) {
             $this->smtpCmd($socket, 'STARTTLS', 220);
             if (!stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
                 throw new RuntimeException('SMTP STARTTLS failed');
             }
-            $this->smtpCmd($socket, 'EHLO collarup.local', 250);
+            $this->smtpCmd($socket, 'EHLO talentpulse.local', 250);
         }
 
         if ($user !== '') {
@@ -74,12 +83,21 @@ class MailService
         }
 
         $this->smtpCmd($socket, 'MAIL FROM:<' . $from . '>', 250);
-        $this->smtpCmd($socket, 'RCPT TO:<' . $to . '>', 250);
+        foreach (array_merge($toList, $ccList) as $addr) {
+            $this->smtpCmd($socket, 'RCPT TO:<' . $addr . '>', 250);
+        }
         $this->smtpCmd($socket, 'DATA', 354);
 
-        $boundary = 'collarup_' . md5(uniqid('', true));
+        $boundary = 'talentpulse_' . md5(uniqid('', true));
         $message = "From: " . $this->formatAddress($from, $fromName) . "\r\n";
-        $message .= "To: <{$to}>\r\n";
+        $message .= 'To: ' . implode(', ', array_map(function ($a) {
+            return '<' . $a . '>';
+        }, $toList)) . "\r\n";
+        if (!empty($ccList)) {
+            $message .= 'Cc: ' . implode(', ', array_map(function ($a) {
+                return '<' . $a . '>';
+            }, $ccList)) . "\r\n";
+        }
         $message .= "Subject: {$subject}\r\n";
         $message .= "MIME-Version: 1.0\r\n";
         $message .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
@@ -117,5 +135,24 @@ class MailService
     {
         $name = str_replace(['"', "\r", "\n"], '', $name);
         return '"' . $name . '" <' . $email . '>';
+    }
+
+    private function normalizeEmails($addresses)
+    {
+        if (is_string($addresses)) {
+            $addresses = preg_split('/[;,]/', $addresses);
+        }
+        if (!is_array($addresses)) {
+            return [];
+        }
+        $out = [];
+        foreach ($addresses as $email) {
+            $email = strtolower(trim((string) $email));
+            if ($email !== '' && strpos($email, '@') !== false) {
+                $out[$email] = $email;
+            }
+        }
+
+        return array_values($out);
     }
 }

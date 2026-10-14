@@ -6,7 +6,7 @@
  */
 class InterviewAnalysisOrchestrator
 {
-    const PROMPT_VERSION = 'v3-grounded';
+    const PROMPT_VERSION = 'v4-speaker-musthave';
     const PASS_QA = 'qa_extraction';
     const PASS_SCORING = 'scoring';
     const PASS_GROUNDING = 'grounding_audit';
@@ -28,11 +28,6 @@ class InterviewAnalysisOrchestrator
      */
     public function analyze($interviewId, array $context)
     {
-        $pipeline = $this->pipelineMode();
-        if ($pipeline === 'legacy') {
-            return $this->openai->analyzeInterview($context);
-        }
-
         $runId = $this->startRun($interviewId);
 
         try {
@@ -97,13 +92,6 @@ class InterviewAnalysisOrchestrator
         }
     }
 
-    private function pipelineMode()
-    {
-        $config = config('services')['azure_openai'];
-        $mode = isset($config['analysis_pipeline']) ? strtolower($config['analysis_pipeline']) : 'multipass';
-        return in_array($mode, ['legacy', 'multipass'], true) ? $mode : 'multipass';
-    }
-
     private function groundingPassEnabled()
     {
         $config = config('services')['azure_openai'];
@@ -141,6 +129,14 @@ class InterviewAnalysisOrchestrator
             $merged['grounding_safe_summary'] = $audit['safe_summary'];
         }
 
+        if (!empty($audit['score_tone_mismatch']['detected'])) {
+            if (isset($merged['overall_score']) && $merged['overall_score'] > 6) {
+                $merged['overall_score'] = min((float) $merged['overall_score'], 6.0);
+                $merged['overall_score_capped_by_audit'] = true;
+            }
+            $merged['score_tone_mismatch'] = $audit['score_tone_mismatch'];
+        }
+
         if (!empty($audit['recommendation_note']) && isset($merged['overview']['recommendation'])) {
             $prefix = ($groundingScore !== null && $groundingScore < 70)
                 ? '[Verify against transcript — limited grounding] '
@@ -149,6 +145,10 @@ class InterviewAnalysisOrchestrator
         } elseif ($groundingScore !== null && $groundingScore < 70 && isset($merged['overview']['recommendation'])) {
             $merged['overview']['recommendation'] = '[Verify against transcript — limited grounding] '
                 . $merged['overview']['recommendation'];
+        }
+
+        if (!empty($audit['recommendation_adjustment']) && $audit['recommendation_adjustment'] === 'downgrade' && isset($merged['overall_score'])) {
+            $merged['overall_score'] = min((float) $merged['overall_score'], 6.0);
         }
 
         return $merged;

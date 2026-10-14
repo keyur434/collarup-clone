@@ -13,7 +13,7 @@ require __DIR__ . '/../app/bootstrap.php';
 $section = isset($argv[1]) ? strtolower($argv[1]) : 'all';
 $sections = $section === 'all' ? ['openai', 'login', 'graph'] : [$section];
 
-echo "CollarUp integration checks\n";
+echo "TalentPulse integration checks\n";
 echo "===========================\n\n";
 
 foreach ($sections as $name) {
@@ -46,6 +46,10 @@ function fail($msg)
 
 function envVal($key)
 {
+    if (function_exists('env')) {
+        $v = env($key, '');
+        return $v === null ? '' : trim((string) $v);
+    }
     $v = getenv($key);
     return $v === false ? '' : trim($v);
 }
@@ -83,13 +87,29 @@ function testOpenAi()
         return;
     }
 
+    $listed = $svc->listDeploymentNames();
+    if ($listed !== []) {
+        ok('Deployments on resource: ' . implode(', ', $listed));
+        if (!in_array(envVal('AZURE_OPENAI_DEPLOYMENT'), $listed, true)) {
+            warn('AZURE_OPENAI_DEPLOYMENT="' . envVal('AZURE_OPENAI_DEPLOYMENT') . '" is not in that list — fix .env');
+        }
+    } else {
+        warn('Could not list deployments (common on *.services.ai.azure.com — check Portal manually)');
+    }
+
+    if (envVal('AZURE_OPENAI_DEPLOYMENT_ID') !== ''
+        && preg_match('/^[0-9a-f-]{36}$/i', envVal('AZURE_OPENAI_DEPLOYMENT_ID'))) {
+        warn('AZURE_OPENAI_DEPLOYMENT_ID looks like a UUID — use deployment *name* in AZURE_OPENAI_DEPLOYMENT instead');
+    }
+
     try {
         $reply = $svc->ping();
         ok('Chat completion: ' . substr(trim($reply), 0, 120));
     } catch (Exception $e) {
         fail('Chat completion: ' . $e->getMessage());
-        echo "       Tip: deploy gpt-4.1 + gpt-4.1-mini on Foundry; set endpoint to\n";
-        echo "       https://emailintigration.services.ai.azure.com\n";
+        echo "       Tip: Azure Portal → Deployments → copy deployment name into AZURE_OPENAI_DEPLOYMENT.\n";
+        echo "       Foundry: AZURE_OPENAI_ENDPOINT=https://<resource>.services.ai.azure.com\n";
+        echo "       Optional: AZURE_OPENAI_FOUNDRY_PROJECT=<project name> if deployments are project-scoped.\n";
     }
 
     try {
@@ -168,7 +188,7 @@ function testGraphSync()
 
     if ($missing > 0) {
         echo "       Create a SEPARATE app registration (Sync app) — not the login app.\n";
-        echo "       Grant admin consent: Files.ReadWrite.All, Sites.Read.All\n";
+        echo "       Grant admin consent: Files.ReadWrite.All, Sites.Read.All, User.Read.All\n";
         return;
     }
 
@@ -213,5 +233,16 @@ function testGraphSync()
         fail('Folder list: ' . $e->getMessage());
         echo "       Check ONEDRIVE_DRIVE_ID and ONEDRIVE_FOLDER_PATH (folder must exist).\n";
         echo "       Run: php scripts/resolve_onedrive_drive.php user@yourdomain.com\n";
+    }
+
+    try {
+        $sample = $graph->searchDirectoryUsers('', 3);
+        ok('Entra directory readable — sample ' . count($sample) . ' user(s) (User.Read.All)');
+    } catch (Exception $e) {
+        fail('Entra directory: ' . $e->getMessage());
+        $msg = $e->getMessage();
+        if (stripos($msg, '403') !== false || stripos($msg, 'Authorization') !== false) {
+            echo "       Add application permission User.Read.All on the Sync app and grant admin consent.\n";
+        }
     }
 }

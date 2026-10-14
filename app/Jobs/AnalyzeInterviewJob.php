@@ -80,6 +80,20 @@ class AnalyzeInterviewJob
         if (!empty($job['title'])) {
             $keyterms[] = $job['title'];
         }
+        $candidate = db()->fetch(
+            'SELECT first_name, last_name FROM candidates WHERE id = ?',
+            [$interview['candidate_id']]
+        );
+        $speakerContext = [
+            'candidate_first_name' => $candidate['first_name'] ?? '',
+            'candidate_last_name' => $candidate['last_name'] ?? '',
+        ];
+        if (!empty($candidate['first_name'])) {
+            $keyterms[] = $candidate['first_name'];
+        }
+        if (!empty($candidate['last_name'])) {
+            $keyterms[] = $candidate['last_name'];
+        }
 
         // ElevenLabs Scribe v2 accepts video directly (same as Python pipeline)
         $sttPath = $videoPath;
@@ -91,12 +105,15 @@ class AnalyzeInterviewJob
             $sttPath = $audioPath;
         }
 
-        $rawText = $transcriptData['raw_full_text'] ?? $transcriptData['full_text'];
+        $transcriptData = TranscriptSpeakerService::normalizeTranscript($transcriptData, $speakerContext);
+        $rawText = $transcriptData['full_text'];
+        $transcriptData['raw_full_text'] = $rawText;
+
         $refinedText = $openai->refineTranscript($rawText, [
             'job_title' => $job['title'],
             'key_skills' => $skillsStr,
         ]);
-        $transcriptData['full_text'] = $refinedText;
+        $transcriptData = TranscriptSpeakerService::mergeRefinedText($transcriptData, $refinedText, $speakerContext);
 
         db()->query('DELETE FROM transcripts WHERE interview_id = ?', [$interviewId]);
 

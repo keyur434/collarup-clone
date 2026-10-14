@@ -7,7 +7,7 @@
     </div>
     <div class="form-group">
         <label>Default about company</label>
-        <textarea name="company_about" rows="6" placeholder="Brief company description for job postings"><?= e($settings['company_about'] ?? '') ?></textarea>
+        <textarea name="company_about" rows="6" placeholder="Brief company description for job postings (shown on new job roles)"><?= e($settings['company_about'] ?? '') ?></textarea>
     </div>
     <h3 style="font-size:0.95rem;margin-bottom:12px;margin-top:20px">Email &amp; notifications</h3>
     <p class="hint" style="margin-bottom:12px">Configure SMTP in <code>.env</code> (<code>SMTP_HOST</code>, <code>SMTP_USERNAME</code>, etc.). Emails log to notification_log when sent.</p>

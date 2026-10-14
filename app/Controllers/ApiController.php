@@ -38,14 +38,36 @@ class ApiController
 
     }
 
+    public function employees()
+    {
+        $q = trim($_GET['q'] ?? '');
+        $dir = new EmployeeDirectoryService();
+        $limit = $q === '' ? 400 : 80;
+        json_response($dir->search($q, $limit));
+    }
+
 
 
     public function jobStages($id)
 
     {
+        PermissionService::requireJobAccess($id);
+        json_response(db()->fetchAll('SELECT id, name FROM job_pipeline_stages WHERE job_id = ? AND is_active = 1 ORDER BY sort_order', [$id]));
 
-        json_response(db()->fetchAll('SELECT id, name FROM job_pipeline_stages WHERE job_id = ? ORDER BY sort_order', [$id]));
+    }
 
+    public function suggestJobSkills()
+    {
+        verify_csrf();
+        $jd = trim($_POST['job_description'] ?? '');
+        $title = trim($_POST['job_title'] ?? '');
+        $quals = trim($_POST['qualifications'] ?? '');
+        try {
+            $skills = JobSkillSuggestionService::suggest($jd, $title, $quals);
+            json_response(['skills' => $skills]);
+        } catch (Exception $e) {
+            json_response(['error' => $e->getMessage()], 422);
+        }
     }
 
 
@@ -70,9 +92,7 @@ class ApiController
 
 
 
-        PermissionService::requireJobAccess($interview['job_id']);
-
-
+        PermissionService::requireInterviewMediaAccess($interviewId);
 
         $media = db()->fetch('SELECT TOP 1 * FROM interview_media WHERE interview_id = ? ORDER BY id DESC', [$interviewId]);
 
@@ -119,7 +139,7 @@ class ApiController
             http_response_code(404);
             exit;
         }
-        PermissionService::requireJobAccess($interview['job_id']);
+        PermissionService::requireInterviewMediaAccess($interviewId);
         $media = db()->fetch('SELECT TOP 1 * FROM interview_media WHERE interview_id = ? ORDER BY id DESC', [$interviewId]);
         if (!$media || empty($media['blob_name']) || $media['playback_mode'] !== 'blob') {
             http_response_code(404);

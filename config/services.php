@@ -38,31 +38,36 @@ return [
 
     'azure_openai' => [
 
-        'endpoint' => getenv('AZURE_OPENAI_ENDPOINT') ?: '',
+        'endpoint' => env('AZURE_OPENAI_ENDPOINT', ''),
 
-        'endpoint_fallbacks' => array_values(array_filter(array_map('trim', explode(',', getenv('AZURE_OPENAI_ENDPOINT_FALLBACKS') ?: '')))),
+        'endpoint_fallbacks' => array_values(array_filter(array_map('trim', explode(',', env('AZURE_OPENAI_ENDPOINT_FALLBACKS', '') ?: '')))),
 
-        'api_key' => getenv('AZURE_OPENAI_API_KEY') ?: '',
+        'api_key' => env('AZURE_OPENAI_API_KEY', ''),
 
-        'deployment' => getenv('AZURE_OPENAI_DEPLOYMENT') ?: 'gpt-4.1',
+        /** Deployment *name* from Azure Portal → Deployments (not the model SKU label). */
+        'deployment' => env('AZURE_OPENAI_DEPLOYMENT', 'gpt-4.1'),
 
-        'deployment_id' => getenv('AZURE_OPENAI_DEPLOYMENT_ID') ?: '',
+        /** Optional second deployment name to try (not a Foundry project UUID). */
+        'deployment_id' => env('AZURE_OPENAI_DEPLOYMENT_ID', ''),
 
-        'extraction_deployment' => getenv('AZURE_OPENAI_EXTRACTION_DEPLOYMENT') ?: 'gpt-4.1-mini',
+        /** Foundry project name for /api/projects/{name}/openai/v1/... */
+        'foundry_project' => env('AZURE_OPENAI_FOUNDRY_PROJECT', ''),
 
-        'api_version' => getenv('AZURE_OPENAI_API_VERSION') ?: '2025-01-01-preview',
+        'extraction_deployment' => env('AZURE_OPENAI_EXTRACTION_DEPLOYMENT', 'gpt-4.1-mini'),
 
-        'api_mode' => getenv('AZURE_OPENAI_API_MODE') ?: 'auto',
+        'api_version' => env('AZURE_OPENAI_API_VERSION', '2024-10-21'),
 
-        'use_bearer' => getenv('AZURE_OPENAI_USE_BEARER') !== 'false',
+        'api_mode' => env('AZURE_OPENAI_API_MODE', 'auto'),
 
-        'refine_deployment' => getenv('AZURE_OPENAI_REFINE_DEPLOYMENT') ?: 'gpt-4.1-mini',
+        'use_bearer' => env('AZURE_OPENAI_USE_BEARER', 'true') !== 'false',
 
-        'refine_enabled' => getenv('REFINE_TRANSCRIPT') !== 'false',
+        'refine_deployment' => env('AZURE_OPENAI_REFINE_DEPLOYMENT', 'gpt-4.1-mini'),
 
-        'analysis_pipeline' => getenv('ANALYSIS_PIPELINE') ?: 'multipass',
+        'refine_enabled' => env('REFINE_TRANSCRIPT', 'true') !== 'false',
 
-        'grounding_pass' => getenv('ANALYSIS_GROUNDING_PASS') !== 'false',
+        'analysis_pipeline' => env('ANALYSIS_PIPELINE', 'multipass'),
+
+        'grounding_pass' => env('ANALYSIS_GROUNDING_PASS', 'true') !== 'false',
 
     ],
 
@@ -76,7 +81,7 @@ return [
 
         'num_speakers' => (int) (getenv('ELEVENLABS_NUM_SPEAKERS') ?: 2),
 
-        'detect_speaker_roles' => getenv('ELEVENLABS_DETECT_SPEAKER_ROLES') === 'true',
+        'detect_speaker_roles' => getenv('ELEVENLABS_DETECT_SPEAKER_ROLES') !== 'false',
 
         'tag_audio_events' => getenv('ELEVENLABS_TAG_AUDIO_EVENTS') === 'true',
 
@@ -104,7 +109,7 @@ return [
 
         'from_email' => getenv('SMTP_FROM') ?: 'noreply@company.local',
 
-        'from_name' => getenv('SMTP_FROM_NAME') ?: 'CollarUp Clone',
+        'from_name' => getenv('SMTP_FROM_NAME') ?: 'TalentPulse',
 
     ],
 

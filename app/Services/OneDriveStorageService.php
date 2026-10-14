@@ -62,23 +62,30 @@ class OneDriveStorageService
 
         $this->ensureFolder(dirname($fullPath));
 
-
-
-        $content = file_get_contents($localPath);
+        $size = filesize($localPath);
+        if ($size === false) {
+            throw new RuntimeException('Could not read upload file size.');
+        }
 
         $encodedPath = $this->encodePath($fullPath);
-
-        $url = '/drives/' . $this->driveId . '/root:/' . $encodedPath . ':/content';
-
-
-
-        $ext = strtolower(pathinfo($localPath, PATHINFO_EXTENSION));
-
-        $mime = $ext === 'webm' ? 'video/webm' : 'video/mp4';
-
-        $item = $this->graph->uploadBinary($url, $content, $mime);
-
-
+        $item = null;
+        if ($size > 4 * 1024 * 1024) {
+            $item = $this->uploadLargeFile($localPath, $encodedPath, $size);
+        } else {
+            $content = file_get_contents($localPath);
+            $ext = strtolower(pathinfo($localPath, PATHINFO_EXTENSION));
+            $mime = $ext === 'webm' ? 'video/webm' : 'video/mp4';
+            $url = '/drives/' . $this->driveId . '/root:/' . $encodedPath . ':/content';
+            try {
+                $item = $this->graph->uploadBinary($url, $content, $mime);
+            } catch (RuntimeException $e) {
+                if (stripos($e->getMessage(), 'IO error') !== false || stripos($e->getMessage(), 'payload') !== false) {
+                    $item = $this->uploadLargeFile($localPath, $encodedPath, $size);
+                } else {
+                    throw $e;
+                }
+            }
+        }
 
         return [
 
@@ -94,6 +101,76 @@ class OneDriveStorageService
 
         ];
 
+    }
+
+    /**
+     * Graph simple PUT fails on large Teams MP4s — use upload session (chunked).
+     *
+     * @return array<string, mixed>
+     */
+    private function uploadLargeFile($localPath, $encodedPath, $size)
+    {
+        $session = $this->graph->request(
+            'POST',
+            '/drives/' . $this->driveId . '/root:/' . $encodedPath . ':/createUploadSession',
+            ['item' => ['@microsoft.graph.conflictBehavior' => 'replace']]
+        );
+        if (empty($session['uploadUrl'])) {
+            throw new RuntimeException('OneDrive createUploadSession did not return uploadUrl.');
+        }
+
+        $uploadUrl = $session['uploadUrl'];
+        $chunkSize = 10 * 1024 * 1024;
+        $handle = fopen($localPath, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('Could not open file for chunked upload.');
+        }
+
+        $offset = 0;
+        $lastResponse = null;
+        while ($offset < $size) {
+            $len = (int) min($chunkSize, $size - $offset);
+            $data = fread($handle, $len);
+            if ($data === false || strlen($data) !== $len) {
+                fclose($handle);
+                throw new RuntimeException('Chunk read failed during OneDrive upload.');
+            }
+            $end = $offset + $len - 1;
+            $ch = curl_init($uploadUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_CUSTOMREQUEST => 'PUT',
+                CURLOPT_POSTFIELDS => $data,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 3600,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Length: ' . $len,
+                    'Content-Range: bytes ' . $offset . '-' . $end . '/' . $size,
+                ],
+            ]);
+            $response = curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err = curl_error($ch);
+            curl_close($ch);
+            if ($response === false) {
+                fclose($handle);
+                throw new RuntimeException('OneDrive chunk upload failed: ' . $err);
+            }
+            if ($code < 200 || $code >= 300) {
+                fclose($handle);
+                throw new RuntimeException('OneDrive chunk upload HTTP ' . $code . ': ' . substr($response, 0, 200));
+            }
+            $lastResponse = json_decode($response, true);
+            $offset += $len;
+        }
+        fclose($handle);
+
+        if (is_array($lastResponse) && !empty($lastResponse['id'])) {
+            return $lastResponse;
+        }
+        if (is_array($lastResponse) && !empty($lastResponse['resourceId'])) {
+            return ['id' => $lastResponse['resourceId']];
+        }
+        throw new RuntimeException('OneDrive upload session finished without drive item id.');
     }
 
 

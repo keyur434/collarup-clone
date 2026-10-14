@@ -1,4 +1,4 @@
-# CollarUp Clone — Implementation Roadmap
+# TalentPulse — Implementation Roadmap
 
 > **Living document.** Update this file whenever a phase, task, or iteration changes.
 > Last updated: **2026-09-14**
@@ -21,6 +21,7 @@
 | 5 — Interviewer profiles | pending | Profile entity + match pass |
 | 6 — STT scale-up | pending | 90-min chunking + optional Sarvam |
 | 7 — Advanced proctoring | optional | Webcam, copy-paste, screen events |
+| **Hiring desk (preview)** | **in_progress** | `/hiring-desk` + cached AI pool brief (`016_job_hiring_insights`) — `docs/HIRING_DESK_BETA.md` |
 
 **Production cost baseline:** ~₹105 / 90-min interview (ElevenLabs + Azure Mumbai GPT-4.1 multi-pass).
 

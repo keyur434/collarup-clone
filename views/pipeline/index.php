@@ -1,4 +1,4 @@
-<?php $pageBack = ['url' => url('pipeline'), 'label' => 'Pipeline']; ?>
+<?php $breadcrumbs = nav_trail_dashboard('Pipeline'); ?>
 
 <!-- Job selector -->
 <div class="toolbar" style="margin-bottom:14px">

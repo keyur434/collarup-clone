@@ -1,4 +1,4 @@
-<?php $pageBack = ['url' => url('team'), 'label' => 'Team Management']; ?>
+<?php $breadcrumbs = nav_trail_dashboard('Team Management'); ?>
 
 <!-- Toolbar -->
 <div class="toolbar" style="justify-content:space-between">
@@ -25,12 +25,12 @@
 <!-- Table -->
 <div class="table-wrap">
     <div class="table-scroll">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th>Name</th>
-                    <th>Role</th>
-                    <th>Email</th>
+                    <?= th_sort('Name', 'string') ?>
+                    <?= th_sort('Role', 'string') ?>
+                    <?= th_sort('Email', 'string') ?>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -63,23 +63,7 @@
             </tbody>
         </table>
     </div>
-    <div class="table-footer">
-        <div class="items-per-page">
-            Items per page
-            <select><option>15</option><option>25</option><option>50</option></select>
-        </div>
-        <?php if (isset($pagination)): ?>
-        <div class="pagination">
-            <?php if ($pagination['prev']): ?><a href="?page=<?= $pagination['prev'] ?>">&#8249;</a><?php else: ?><span style="opacity:.4">&#8249;</span><?php endif; ?>
-            <?php foreach ($pagination['pages'] as $p): ?>
-                <?php if ($p === '...'): ?><span class="ellipsis">…</span>
-                <?php elseif ($p == $pagination['current']): ?><a class="active"><?= $p ?></a>
-                <?php else: ?><a href="?page=<?= $p ?>"><?= $p ?></a><?php endif; ?>
-            <?php endforeach; ?>
-            <?php if ($pagination['next']): ?><a href="?page=<?= $pagination['next'] ?>">&#8250;</a><?php else: ?><span style="opacity:.4">&#8250;</span><?php endif; ?>
-        </div>
-        <?php endif; ?>
-    </div>
+    <?php $perPageOptions = [15, 25, 50]; include BASE_PATH . '/views/partials/table_pagination.php'; ?>
 </div>
 <script>
 function toggleTeamMenu(btn) {

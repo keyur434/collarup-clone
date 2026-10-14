@@ -5,12 +5,27 @@ class ResumeParserService
     /**
      * @return array{first_name?:string,last_name?:string,email?:string,phone?:string,years_experience?:float,current_company?:string,skills?:string[]}
      */
+    public function extractTextOnly($absolutePath, $extension)
+    {
+        return $this->extractText($absolutePath, strtolower($extension));
+    }
+
     public function parseFile($absolutePath, $extension)
     {
         $text = $this->extractText($absolutePath, strtolower($extension));
         if ($text === '') {
             return [];
         }
+        return $this->parseHeuristic($text);
+    }
+
+    public function parseText($text)
+    {
+        $text = sanitize_utf8_string(trim((string) $text));
+        if ($text === '') {
+            return [];
+        }
+
         return $this->parseHeuristic($text);
     }
 
@@ -53,15 +68,9 @@ class ResumeParserService
         }
         if (function_exists('shell_exec')) {
             $escaped = escapeshellarg($path);
-            foreach (['pdftotext', 'mutool draw -F txt'] as $cmd) {
-                if (stripos($cmd, 'pdftotext') === 0) {
-                    $out = @shell_exec('pdftotext ' . $escaped . ' - 2>NUL');
-                } else {
-                    $out = null;
-                }
-                if (!empty($out) && strlen(trim($out)) > 40) {
-                    return $this->normalizeWhitespace($out);
-                }
+            $out = PopplerTool::run('pdftotext', $escaped . ' -');
+            if (!empty($out) && strlen(trim($out)) > 40) {
+                return $this->normalizeWhitespace($out);
             }
         }
         return $this->normalizeWhitespace($this->extractBinaryText($path));
@@ -101,7 +110,8 @@ class ResumeParserService
     {
         $text = preg_replace('/[ \t]+/', ' ', $text);
         $text = preg_replace('/\n{3,}/', "\n\n", $text);
-        return trim($text);
+
+        return sanitize_utf8_string(trim($text));
     }
 
     private function parseHeuristic($text)

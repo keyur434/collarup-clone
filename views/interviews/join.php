@@ -4,7 +4,7 @@
     <script>
     (function () {
         try {
-            var stored = localStorage.getItem('collarup-theme');
+            var stored = localStorage.getItem('talentpulse-theme') || localStorage.getItem('collarup-theme');
             if (stored === 'dark') {
                 document.documentElement.setAttribute('data-theme', 'dark');
             } else if (stored !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {

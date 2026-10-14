@@ -38,7 +38,7 @@ Portal: **Delegated** permissions `openid`, `profile`, `email`, `User.Read`.
 | `TEAMS_ORGANIZER_USER_ID` | Teams only | **Missing** |
 
 Portal: **Application** permissions + admin consent:
-`Files.ReadWrite.All`, `Sites.Read.All`, `OnlineMeetings.Read.All`, `OnlineMeetingRecording.Read.All`
+`Files.ReadWrite.All`, `Sites.Read.All`, `OnlineMeetings.Read.All`, `OnlineMeetingRecording.Read.All`, **`User.Read.All`** (company directory for hiring manager / interviewer search)
 
 Without sync app → videos stay in local `storage/videos/`.
 

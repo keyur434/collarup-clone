@@ -12,7 +12,7 @@ class TeamController
 
     public function index()
     {
-        $perPage = 15;
+        $perPage = isset($_GET['perPage']) ? max(1, (int) $_GET['perPage']) : 15;
         $page = isset($_GET['page']) ? max(1, (int) $_GET['page']) : 1;
         $offset = ($page - 1) * $perPage;
         $total = db()->fetch('SELECT COUNT(*) as c FROM users WHERE is_active = 1')['c'];
@@ -22,6 +22,7 @@ class TeamController
             'title' => 'Team Management',
             'members' => $members,
             'page' => $page,
+            'perPage' => $perPage,
             'totalPages' => max(1, ceil($total / $perPage)),
             'activeNav' => 'team',
         ]);

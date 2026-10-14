@@ -1,29 +1,38 @@
-<?php $pageBack = ['url' => url('leaderboard'), 'label' => 'Leaderboard'];
+<?php $breadcrumbs = nav_trail_dashboard('Leaderboard');
 function score_ring_html($score) {
     if ($score === null || $score === '') return '<span class="score-ring zero">–</span>';
     $v = (float)$score;
     $cls = $v >= 8 ? 'good' : ($v >= 5 ? 'avg' : 'poor');
     return '<span class="score-ring ' . $cls . '">' . number_format($v, 1) . '</span>';
 }
+function leaderboard_criterion_score(array $row, $name) {
+    foreach ($row['criteria_scores'] as $cs) {
+        if (strcasecmp(trim((string) ($cs['criterion_name'] ?? '')), trim((string) $name)) === 0) {
+            return $cs['score'];
+        }
+    }
+    return null;
+}
+$criteriaColumns = $criteriaColumns ?? [];
 ?>
 
 <!-- Toolbar -->
 <div class="toolbar" style="justify-content:space-between">
     <form method="GET" style="display:contents">
         <select name="departmentId" class="filter-select" onchange="this.form.submit()" style="min-width:130px">
-            <option value="">Informati...</option>
+            <option value="">Department</option>
             <?php foreach ($departments as $d): ?>
             <option value="<?= $d['id'] ?>" <?= ($departmentId==$d['id'])?'selected':'' ?>><?= e($d['name']) ?></option>
             <?php endforeach; ?>
         </select>
         <select name="jobId" class="filter-select" onchange="this.form.submit()" style="min-width:130px">
-            <option value="">Sr. Executi...</option>
+            <option value="">All job roles</option>
             <?php foreach ($jobs as $j): ?>
             <option value="<?= $j['id'] ?>" <?= ($jobId===$j['id'])?'selected':'' ?>><?= e($j['title']) ?></option>
             <?php endforeach; ?>
         </select>
-        <select name="jobPipelineId" class="filter-select" onchange="this.form.submit()" style="min-width:130px">
-            <option value="">Video AI I...</option>
+        <select name="jobPipelineId" class="filter-select" onchange="this.form.submit()" style="min-width:130px" <?= empty($jobId) ? 'disabled' : '' ?>>
+            <option value="">All stages</option>
             <?php foreach ($stages as $s): ?>
             <option value="<?= $s['id'] ?>" <?= ($stageId===$s['id'])?'selected':'' ?>><?= e($s['name']) ?></option>
             <?php endforeach; ?>
@@ -42,51 +51,56 @@ function score_ring_html($score) {
     </button>
 </div>
 
-<?php if ($jobId && !empty($rows)): ?>
-<div class="table-wrap">
+<?php if (!empty($rows)): ?>
+<div class="table-wrap leaderboard-wrap">
     <div class="table-scroll">
-        <table class="data-table">
+        <table class="data-table leaderboard-table<?= empty($jobId) ? '' : ' leaderboard-table--single-job' ?>" data-sortable>
             <thead>
                 <tr>
-                    <th>
-                        <span class="sort-icon">Candidate Name
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg>
-                        </span>
-                    </th>
-                    <th><span class="sort-icon">Overall <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg></span></th>
-                    <th><span class="sort-icon">Experience <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg></span></th>
-                    <th><span class="sort-icon">Cultural <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg></span></th>
-                    <?php foreach ($criteria as $cr): ?>
-                    <th><span class="sort-icon"><?= e($cr['name']) ?> <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg></span></th>
+                    <?= th_sort('Candidate Name', 'string', null, 'lb-sticky lb-sticky-candidate') ?>
+                    <?php if (empty($jobId)): ?>
+                    <?= th_sort('Job role', 'string', null, 'lb-sticky lb-sticky-job') ?>
+                    <?php endif; ?>
+                    <?= th_sort('Overall', 'number', 'desc', 'lb-score-col') ?>
+                    <?= th_sort('Experience', 'number', null, 'lb-score-col') ?>
+                    <?= th_sort('Culture', 'number', null, 'lb-score-col') ?>
+                    <?= th_sort('Soft skills', 'number', null, 'lb-score-col') ?>
+                    <?php foreach ($criteriaColumns as $crName): ?>
+                    <?= th_sort($crName, 'number', null, 'lb-score-col') ?>
                     <?php endforeach; ?>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($rows as $row): ?>
                 <tr>
-                    <td data-label="Candidate">
-                        <a href="<?= url('jobs/' . $jobId . '/reports/' . $row['id']) ?>" style="color:var(--primary);font-weight:600"><?= e($row['first_name'] . ' ' . $row['last_name']) ?></a>
+                    <td class="lb-sticky lb-sticky-candidate" data-label="Candidate" data-sort-value="<?= e(strtolower($row['first_name'] . ' ' . $row['last_name'])) ?>">
+                        <a href="<?= url('jobs/' . $row['job_id'] . '/reports/' . $row['id']) ?>" style="color:var(--primary);font-weight:600"><?= e($row['first_name'] . ' ' . $row['last_name']) ?></a>
                         <div style="font-size:0.78rem;color:var(--text-muted)"><?= format_date($row['completed_at'], 'd M, Y') ?></div>
                     </td>
-                    <td data-label="Overall"><?= score_ring_html($row['overall_score']) ?></td>
-                    <td data-label="Experience"><?= score_ring_html($row['experience_score']) ?></td>
-                    <td data-label="Cultural"><?= score_ring_html($row['culture_score']) ?></td>
-                    <?php foreach ($criteria as $cr):
-                        $found = null;
-                        foreach ($row['criteria_scores'] as $cs) { if ($cs['criterion_name'] === $cr['name']) $found = $cs['score']; }
+                    <?php if (empty($jobId)): ?>
+                    <td class="lb-sticky lb-sticky-job" data-label="Job" data-sort-value="<?= e(strtolower($row['job_title'])) ?>"><?= e($row['job_title']) ?></td>
+                    <?php endif; ?>
+                    <td class="lb-score-col" data-label="Overall" data-sort-value="<?= sort_data_val($row['overall_score']) ?>"><?= score_ring_html($row['overall_score']) ?></td>
+                    <td class="lb-score-col" data-label="Experience" data-sort-value="<?= sort_data_val($row['experience_score']) ?>"><?= score_ring_html($row['experience_score']) ?></td>
+                    <td class="lb-score-col" data-label="Culture" data-sort-value="<?= sort_data_val($row['culture_score']) ?>"><?= score_ring_html($row['culture_score']) ?></td>
+                    <td class="lb-score-col" data-label="Soft skills" data-sort-value="<?= sort_data_val($row['soft_skills_score']) ?>"><?= score_ring_html($row['soft_skills_score']) ?></td>
+                    <?php foreach ($criteriaColumns as $crName):
+                        $cScore = leaderboard_criterion_score($row, $crName);
                     ?>
-                    <td data-label="<?= e($cr['name']) ?>"><?= score_ring_html($found) ?></td>
+                    <td class="lb-score-col" data-label="<?= e($crName) ?>" data-sort-value="<?= sort_data_val($cScore) ?>"><?= score_ring_html($cScore) ?></td>
                     <?php endforeach; ?>
                 </tr>
                 <?php endforeach; ?>
             </tbody>
         </table>
     </div>
+    <?php include BASE_PATH . '/views/partials/table_pagination.php'; ?>
 </div>
-<?php elseif ($jobId): ?>
-<div class="empty-state">No completed interviews for this job role yet.</div>
 <?php else: ?>
-<div class="empty-state">Select a department and job role to view the leaderboard.</div>
+<div class="empty-state">
+    No AI interview reports yet for the current filters.
+    Reports appear here after Teams recording sync and analysis complete.
+</div>
 <?php endif; ?>
 
 <!-- Settings panel -->

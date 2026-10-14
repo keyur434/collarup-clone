@@ -39,6 +39,8 @@ $router->post('/jobs/edit/{id}/draft-message', 'JobController@updateDraftMessage
 $router->post('/jobs/{id}/status', 'JobController@updateStatus', ['AuthMiddleware::handle']);
 
 $router->get('/jobs/{id}/interviews', 'JobController@show', ['AuthMiddleware::handle']);
+$router->get('/reports/shared/{token}', 'ReportController@sharedShow');
+$router->get('/reports/shared/{token}/export', 'ReportController@sharedExport');
 $router->get('/jobs/{jobId}/reports/{reportId}', 'ReportController@show', ['AuthMiddleware::handle']);
 $router->get('/jobs/{jobId}/reports/{reportId}/export', 'ReportController@export', ['AuthMiddleware::handle']);
 $router->post('/jobs/{jobId}/reports/{reportId}/decision', 'ReportController@decision', ['AuthMiddleware::handle']);
@@ -62,9 +64,12 @@ $router->get('/jobs/{jobId}/compare', 'CompareController@show', ['AuthMiddleware
 $router->get('/join/{interviewId}', 'JoinController@show');
 $router->get('/api/candidates/check-email', 'CandidateController@checkEmail', ['AuthMiddleware::handle']);
 $router->post('/api/candidates/parse-resume', 'CandidateController@parseResume', ['AuthMiddleware::handle']);
+$router->post('/api/candidates/preview-bulk-import', 'CandidateController@previewBulkImport', ['AuthMiddleware::handle']);
 $router->get('/interviews/{id}/details', 'CandidateController@details', ['AuthMiddleware::handle']);
 $router->post('/interviews/{id}/details', 'CandidateController@updateDetails', ['AuthMiddleware::handle']);
 $router->post('/interviews/{id}/register-teams', 'CandidateController@registerTeamsLink', ['AuthMiddleware::handle']);
+$router->post('/interviews/{id}/fetch-recording', 'CandidateController@fetchRecordingNow', ['AuthMiddleware::handle']);
+$router->post('/interviews/{id}/requeue-analysis', 'CandidateController@requeueAnalysis', ['AuthMiddleware::handle']);
 $router->post('/interviews/{id}/upload', 'CandidateController@uploadVideo', ['AuthMiddleware::handle']);
 $router->get('/applications/{id}/resume', 'CandidateController@downloadResumeByApplication', ['AuthMiddleware::handle']);
 $router->get('/candidates/{id}/resume', 'CandidateController@downloadResume', ['AuthMiddleware::handle']);
@@ -81,6 +86,17 @@ $router->get('/pipeline', 'PipelineController@index', ['AuthMiddleware::handle']
 
 // Leaderboard
 $router->get('/leaderboard', 'LeaderboardController@index', ['AuthMiddleware::handle']);
+
+// Hiring desk (preview — gated by HIRING_DESK_BETA / app_settings hiring_desk_beta)
+$router->get('/hiring-desk', 'HiringDeskController@index', ['AuthMiddleware::handle']);
+$router->get('/hiring-desk/jobs/{jobId}', 'HiringDeskController@show', ['AuthMiddleware::handle']);
+$router->get('/hiring-desk/jobs/{jobId}/compare', 'HiringDeskController@compare', ['AuthMiddleware::handle']);
+$router->post('/hiring-desk/jobs/{jobId}/insights/generate', 'HiringDeskController@generateInsights', ['AuthMiddleware::handle']);
+$router->post('/hiring-desk/jobs/{jobId}/resume-match/score', 'HiringDeskController@scoreResumes', ['AuthMiddleware::handle']);
+$router->post('/hiring-desk/jobs/{jobId}/pool-rank/generate', 'HiringDeskController@generatePoolRank', ['AuthMiddleware::handle']);
+$router->post('/hiring-desk/jobs/{jobId}/config', 'HiringDeskController@saveConfig', ['AuthMiddleware::handle']);
+$router->post('/hiring-desk/jobs/{jobId}/decision-note', 'HiringDeskController@recordDecisionNote', ['AuthMiddleware::handle']);
+$router->get('/hiring-desk/jobs/{jobId}/export', 'HiringDeskController@exportPack', ['AuthMiddleware::handle']);
 
 // Team
 $router->get('/team', 'TeamController@index', ['AuthMiddleware::handle']);
@@ -99,9 +115,11 @@ $router->get('/api/pending/interviews', 'PendingRecordingController@searchInterv
 $router->get('/api/master/departments', 'ApiController@departments', ['AuthMiddleware::handle']);
 $router->get('/api/master/states', 'ApiController@states', ['AuthMiddleware::handle']);
 $router->get('/api/master/cities', 'ApiController@cities', ['AuthMiddleware::handle']);
+$router->get('/api/employees/search', 'ApiController@employees', ['AuthMiddleware::handle']);
 $router->get('/api/jobs/{id}/stages', 'ApiController@jobStages', ['AuthMiddleware::handle']);
-$router->get('/api/video/{interviewId}', 'ApiController@videoSas', ['AuthMiddleware::handle']);
-$router->get('/api/video/{interviewId}/stream', 'ApiController@videoStream', ['AuthMiddleware::handle']);
+$router->post('/api/jobs/suggest-skills', 'ApiController@suggestJobSkills', ['AuthMiddleware::handle']);
+$router->get('/api/video/{interviewId}', 'ApiController@videoSas');
+$router->get('/api/video/{interviewId}/stream', 'ApiController@videoStream');
 $router->post('/api/interviews/{interviewId}/integrity-event', 'ApiController@integrityEvent');
 
 $router->dispatch();

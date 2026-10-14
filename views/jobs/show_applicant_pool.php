@@ -1,8 +1,6 @@
 <?php
-$breadcrumbs = [
-    ['label' => $job['title'], 'url' => url('jobs/' . $job['id'] . '/interviews')],
-    ['label' => 'Applicant Pool'],
-];
+$breadcrumbs = nav_trail_job($job, 'Applicant Pool');
+$activeTab = 'applicant-pool';
 ?>
 
 <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap">
@@ -16,12 +14,7 @@ $breadcrumbs = [
     <a href="<?= url('candidates/create?job_id=' . $job['id']) ?>" class="btn btn-primary btn-sm">+ Add Candidate</a>
 </div>
 
-<div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:16px">
-    <a href="<?= url('jobs/' . $job['id'] . '/interviews?tab=applicant-pool') ?>"
-       style="padding:8px 16px;font-size:0.875rem;font-weight:600;color:var(--primary);border-bottom:2px solid var(--primary);margin-bottom:-1px">Applicant Pool</a>
-    <a href="<?= url('jobs/' . $job['id'] . '/interviews') ?>"
-       style="padding:8px 16px;font-size:0.875rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;margin-bottom:-1px">Interviews</a>
-</div>
+<?php include BASE_PATH . '/views/partials/job_subtabs.php'; ?>
 
 <div class="toolbar" style="margin-bottom:14px">
     <form method="GET" style="display:contents">
@@ -35,16 +28,16 @@ $breadcrumbs = [
 
 <div class="table-wrap">
     <div class="table-scroll">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
                     <th><input type="checkbox" style="width:14px"></th>
-                    <th>Candidate Name</th>
-                    <th>Application Date</th>
-                    <th>Company</th>
-                    <th>Location</th>
-                    <th>Experience</th>
-                    <th>Match Score</th>
+                    <?= th_sort('Candidate Name', 'string') ?>
+                    <?= th_sort('Application Date', 'date') ?>
+                    <?= th_sort('Company', 'string') ?>
+                    <?= th_sort('Location', 'string') ?>
+                    <?= th_sort('Experience', 'number') ?>
+                    <?= th_sort('Match Score', 'string') ?>
                 </tr>
             </thead>
             <tbody>
@@ -59,10 +52,10 @@ $breadcrumbs = [
                             <span style="font-weight:500"><?= e($a['first_name'] . ' ' . $a['last_name']) ?></span>
                         </div>
                     </td>
-                    <td data-label="Applied"><?= format_date($a['application_date']) ?></td>
+                    <td data-label="Applied" data-sort-value="<?= e($a['application_date'] ?? '') ?>"><?= format_date($a['application_date']) ?></td>
                     <td data-label="Company"><?= e($a['current_company'] ?: '–') ?></td>
                     <td data-label="Location"><?= e($a['current_location'] ?: '–') ?></td>
-                    <td data-label="Experience"><?= e($a['years_experience'] ?: '–') ?></td>
+                    <td data-label="Experience" data-sort-value="<?= sort_data_val($a['years_experience'] ?? '') ?>"><?= e($a['years_experience'] ?: '–') ?></td>
                     <td data-label="Match"><?= e($a['match_score_grade'] ?: '–') ?></td>
                 </tr>
                 <?php endforeach; endif; ?>

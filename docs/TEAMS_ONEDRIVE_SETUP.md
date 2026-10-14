@@ -27,7 +27,7 @@ Use the **Sync app** client ID from `.env` (`AZURE_AD_SYNC_CLIENT_ID`), not the 
 # Teams PowerShell (Connect-MicrosoftTeams as Global/Teams admin)
 New-CsApplicationAccessPolicy -Identity "CollarUp-Graph" `
   -AppIds "<AZURE_AD_SYNC_CLIENT_ID>" `
-  -Description "CollarUp Graph sync — meeting recordings"
+  -Description "TalentPulse Graph sync — meeting recordings"
 
 # One recruiter
 Grant-CsApplicationAccessPolicy -PolicyName "CollarUp-Graph" -Identity organizer@yourcompany.com
@@ -84,7 +84,7 @@ php cron/sync_recordings.php
 
 ---
 
-## Path A — HR schedules in CollarUp (recommended)
+## Path A — HR schedules in TalentPulse (recommended)
 
 **HR steps:** Job → Interviews → **Schedule** → date/time → **Save & send invite**. No paste link, no upload.
 
@@ -97,7 +97,7 @@ php cron/sync_recordings.php
 
 **Requirements (Microsoft side)**
 
-- Recruiters sign in to CollarUp with their **work email** (same tenant as the sync app).
+- Recruiters sign in to TalentPulse with their **work email** (same tenant as the sync app).
 - Teams **cloud recording** enabled (auto-record for organizers is ideal).
 - Sync app permission **OnlineMeetings.ReadWrite** (application) + admin consent.
 - `TEAMS_ORGANIZER_USER_ID` only as fallback when scheduler has no Azure-linked email.

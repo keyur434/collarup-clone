@@ -2,9 +2,9 @@
 
 ## Recruiter steps
 
-1. Add candidate to the job in CollarUp (if not already there).
+1. Add candidate to the job in TalentPulse (if not already there).
 2. Schedule the interview in **Keka** and send the Teams invite as today.
-3. In CollarUp → job → **Interviews** → **Link Teams meeting**.
+3. In TalentPulse → job → **Interviews** → **Link Teams meeting**.
 4. Paste the **join link** from Keka, date/time, and **host work email** (who owns the meeting in Teams).
 5. After the interview (with cloud recording), wait for the report — no upload.
 

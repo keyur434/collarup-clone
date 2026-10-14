@@ -101,11 +101,7 @@ class CandidateService
         ]);
 
         if ($archiveCurrent) {
-            db()->update('applications', [
-                'is_archived' => 1,
-                'status' => 'cancelled',
-                'updated_at' => date('Y-m-d H:i:s'),
-            ], 'id = :id', ['id' => $applicationId]);
+            self::archiveApplication($applicationId);
         }
 
         ActivityLogService::log('candidate_move_job', 'application', $newAppId, [
@@ -115,6 +111,65 @@ class CandidateService
         ]);
 
         return $newAppId;
+    }
+
+    public static function archiveApplication($applicationId)
+    {
+        db()->update('applications', [
+            'is_archived' => 1,
+            'status' => 'cancelled',
+            'updated_at' => date('Y-m-d H:i:s'),
+        ], 'id = :id', ['id' => $applicationId]);
+    }
+
+    /** Remove one job application (keeps candidate if other applications exist). */
+    public static function deleteApplication($applicationId)
+    {
+        $ctx = db()->fetch(
+            'SELECT a.id, a.candidate_id, c.resume_path
+             FROM applications a
+             JOIN candidates c ON c.id = a.candidate_id
+             WHERE a.id = ?',
+            [$applicationId]
+        );
+        if (!$ctx) {
+            throw new RuntimeException('Application not found.');
+        }
+
+        $interviewIds = array_column(
+            db()->fetchAll('SELECT id FROM interviews WHERE application_id = ?', [$applicationId]),
+            'id'
+        );
+
+        if (!empty($interviewIds)) {
+            $placeholders = implode(',', array_fill(0, count($interviewIds), '?'));
+            db()->query("DELETE FROM ai_analysis_runs WHERE interview_id IN ($placeholders)", $interviewIds);
+            db()->query(
+                "UPDATE pending_recordings SET interview_id = NULL, updated_at = ? WHERE interview_id IN ($placeholders)",
+                array_merge([date('Y-m-d H:i:s')], $interviewIds)
+            );
+        }
+
+        db()->query('DELETE FROM hiring_desk_decision_notes WHERE application_id = ?', [$applicationId]);
+        db()->query('UPDATE cv_summaries SET application_id = NULL WHERE application_id = ?', [$applicationId]);
+        db()->query('DELETE FROM applications WHERE id = ?', [$applicationId]);
+
+        $remaining = (int) db()->fetch(
+            'SELECT COUNT(*) as c FROM applications WHERE candidate_id = ?',
+            [$ctx['candidate_id']]
+        )['c'];
+
+        if ($remaining === 0) {
+            if (!empty($ctx['resume_path'])) {
+                $file = BASE_PATH . '/storage/resumes/' . $ctx['resume_path'];
+                if (file_exists($file)) {
+                    @unlink($file);
+                }
+            }
+            db()->query('DELETE FROM candidates WHERE id = ?', [$ctx['candidate_id']]);
+        }
+
+        return $ctx;
     }
 
     public static function reactivate($applicationId)

@@ -1,4 +1,4 @@
-# CollarUp Clone
+# TalentPulse
 
 AI-powered recruitment platform — PHP 7.3.4, MSSQL, **OneDrive/Graph**, ElevenLabs STT, Azure OpenAI.
 
@@ -15,10 +15,10 @@ AI-powered recruitment platform — PHP 7.3.4, MSSQL, **OneDrive/Graph**, Eleven
 ### 1. Database
 
 ```powershell
-php E:\collarup-clone\database\install.php
+php database/install.php
 ```
 
-Existing DB: `php E:\collarup-clone\database\migrate.php`
+Existing DB: `php database/migrate.php`
 
 ### 2. Environment
 
@@ -26,6 +26,7 @@ Copy `.env.example` → `.env` and configure:
 
 | Area | Variables |
 |------|-----------|
+| Branding | `APP_NAME` (default **TalentPulse**), `SMTP_FROM_NAME` |
 | MSSQL | `DB_*` |
 | SSO (login app) | `AZURE_AD_TENANT_ID`, `AZURE_AD_LOGIN_CLIENT_ID`, `AZURE_AD_LOGIN_CLIENT_SECRET`, `AZURE_AD_LOGIN_REDIRECT_URI` |
 | Graph sync app | `AZURE_AD_SYNC_CLIENT_ID`, `AZURE_AD_SYNC_CLIENT_SECRET` |
@@ -34,6 +35,8 @@ Copy `.env.example` → `.env` and configure:
 | AI | `AZURE_OPENAI_*`, `ELEVENLABS_API_KEY` |
 
 Without Graph keys, videos fall back to `storage/videos/` locally.
+
+**Display-only rebrand (recommended for production):** Set `APP_NAME=TalentPulse` and `SMTP_FROM_NAME=TalentPulse`. Leave `APP_URL`, `DB_DATABASE`, Azure redirect URIs, Teams Graph app, and IIS folder path **unchanged** — no DB rename, no Graph re-consent, no policy migration.
 
 ### 3. Azure Portal (split apps)
 
@@ -44,8 +47,8 @@ Without Graph keys, videos fall back to `storage/videos/` locally.
 ### 4. Scheduled tasks
 
 ```
-php E:\collarup-clone\cron\queue_worker.php      # every 1 min
-php E:\collarup-clone\cron\sync_recordings.php    # every 15–30 min (optional)
+php cron/queue_worker.php      # every 1 min
+php cron/sync_recordings.php    # every 15–30 min (optional)
 ```
 
 ### 5. Workflows

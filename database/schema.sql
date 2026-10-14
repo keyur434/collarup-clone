@@ -1,4 +1,4 @@
--- CollarUp Clone - Microsoft SQL Server Schema
+-- TalentPulse (app) — MSSQL schema; default database name collarup_clone for existing deployments
 -- SQL Server 2016+ recommended (JSON stored as NVARCHAR(MAX))
 
 IF DB_ID(N'collarup_clone') IS NULL
@@ -15,6 +15,15 @@ CREATE TABLE departments (
     name NVARCHAR(100) NOT NULL,
     is_active BIT NOT NULL DEFAULT 1,
     created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+IF OBJECT_ID(N'job_titles', N'U') IS NULL
+CREATE TABLE job_titles (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    name NVARCHAR(100) NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active BIT NOT NULL DEFAULT 1
 );
 GO
 
@@ -87,6 +96,23 @@ CREATE TABLE job_external_contacts (
 );
 GO
 
+IF OBJECT_ID(N'employee_directory_cache', N'U') IS NULL
+CREATE TABLE employee_directory_cache (
+    picker_value NVARCHAR(200) NOT NULL PRIMARY KEY,
+    label NVARCHAR(500) NOT NULL,
+    email NVARCHAR(255) NULL,
+    search_text NVARCHAR(700) NOT NULL,
+    source NVARCHAR(20) NOT NULL,
+    refreshed_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = N'IX_employee_directory_cache_search' AND object_id = OBJECT_ID(N'employee_directory_cache')
+)
+CREATE INDEX IX_employee_directory_cache_search ON employee_directory_cache (search_text);
+GO
+
 IF OBJECT_ID(N'experience_bands', N'U') IS NULL
 CREATE TABLE experience_bands (
     id INT IDENTITY(1,1) PRIMARY KEY,
@@ -119,6 +145,7 @@ IF OBJECT_ID(N'jobs', N'U') IS NULL
 CREATE TABLE jobs (
     id CHAR(36) NOT NULL PRIMARY KEY,
     title NVARCHAR(255) NOT NULL,
+    job_title_id INT NULL,
     department_id INT NULL,
     seniority_id INT NULL,
     country_id INT NULL,
@@ -251,13 +278,17 @@ CREATE TABLE applications (
     decision NVARCHAR(20) NOT NULL DEFAULT 'none' CHECK (decision IN ('none','advance','hold','reject','offer')),
     match_score_grade NVARCHAR(1) NULL CHECK (match_score_grade IN ('A','B','C')),
     application_date DATE NULL,
+    recruiter_id INT NULL,
+    current_ctc NVARCHAR(120) NULL,
+    expected_ctc NVARCHAR(120) NULL,
     is_archived BIT NOT NULL DEFAULT 0,
     created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
     updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
     CONSTRAINT UQ_candidate_job UNIQUE (candidate_id, job_id),
     CONSTRAINT FK_app_candidate FOREIGN KEY (candidate_id) REFERENCES candidates(id) ON DELETE CASCADE,
     CONSTRAINT FK_app_job FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
-    CONSTRAINT FK_app_stage FOREIGN KEY (current_stage_id) REFERENCES job_pipeline_stages(id)
+    CONSTRAINT FK_app_stage FOREIGN KEY (current_stage_id) REFERENCES job_pipeline_stages(id),
+    CONSTRAINT FK_applications_recruiter FOREIGN KEY (recruiter_id) REFERENCES users(id)
 );
 GO
 
@@ -526,4 +557,20 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM ingestion_watermarks WHERE source_key = 'onedrive_recordings')
     INSERT INTO ingestion_watermarks (source_key) VALUES ('onedrive_recordings');
+GO
+
+IF OBJECT_ID(N'interview_report_shares', N'U') IS NULL
+CREATE TABLE interview_report_shares (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    report_id CHAR(36) NOT NULL,
+    recipient_email NVARCHAR(255) NOT NULL,
+    recipient_role NVARCHAR(20) NOT NULL CHECK (recipient_role IN ('hiring_manager','interviewer')),
+    access_token CHAR(64) NOT NULL,
+    view_count INT NOT NULL DEFAULT 0,
+    last_viewed_at DATETIME2 NULL,
+    created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT FK_irs_report FOREIGN KEY (report_id) REFERENCES interview_reports(id) ON DELETE CASCADE,
+    CONSTRAINT UQ_irs_report_email UNIQUE (report_id, recipient_email),
+    CONSTRAINT UQ_irs_token UNIQUE (access_token)
+);
 GO

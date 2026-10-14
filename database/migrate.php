@@ -4,7 +4,7 @@
  */
 require __DIR__ . '/../app/bootstrap.php';
 
-echo "CollarUp Clone - Database Migrations\n";
+echo "TalentPulse - Database Migrations\n";
 echo "====================================\n\n";
 
 $config = config('database');

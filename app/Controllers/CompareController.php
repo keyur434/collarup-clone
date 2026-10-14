@@ -33,9 +33,22 @@ class CompareController
              FROM applications a
              JOIN candidates c ON c.id = a.candidate_id
              LEFT JOIN job_pipeline_stages s ON s.id = a.current_stage_id
-             LEFT JOIN interviews i ON i.application_id = a.id
-             LEFT JOIN interview_reports ir ON ir.interview_id = i.id
+             OUTER APPLY (
+                 SELECT TOP 1 i2.id
+                 FROM interviews i2
+                 WHERE i2.application_id = a.id
+                 ORDER BY COALESCE(i2.completed_at, i2.scheduled_date, i2.created_at) DESC, i2.created_at DESC
+             ) i
+             OUTER APPLY (
+                 SELECT TOP 1 ir2.id, ir2.overall_score, ir2.experience_score, ir2.culture_score,
+                        ir2.soft_skills_score, ir2.score_label, ir2.overview_strengths, ir2.overview_weaknesses,
+                        ir2.overview_recommendation, ir2.raw_analysis_json
+                 FROM interview_reports ir2
+                 WHERE ir2.interview_id = i.id
+                 ORDER BY ir2.created_at DESC
+             ) ir
              WHERE a.id IN ($placeholders) AND a.job_id = ?
+               AND (a.is_archived = 0 OR a.is_archived IS NULL)
              ORDER BY ir.overall_score DESC",
             $params
         );

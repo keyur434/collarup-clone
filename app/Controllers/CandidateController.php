@@ -4,7 +4,7 @@ class CandidateController
 {
     public function index()
     {
-        $perPage = isset($_GET['perPage']) ? (int) $_GET['perPage'] : 15;
+        $perPage = isset($_GET['perPage']) ? max(1, min(100, (int) $_GET['perPage'])) : 15;
         $page = isset($_GET['page']) ? max(1, (int) $_GET['page']) : 1;
         $offset = ($page - 1) * $perPage;
         $search = isset($_GET['search']) ? trim($_GET['search']) : '';
@@ -32,12 +32,29 @@ class CandidateController
         if (empty($_GET['show_archived'])) {
             $where .= ' AND (a.is_archived = 0 OR a.is_archived IS NULL)';
         }
-        if (!PermissionService::isAdminRole()) {
-            $userId = auth_id();
-            $where .= ' AND (EXISTS (SELECT 1 FROM job_hiring_managers jhm WHERE jhm.job_id = a.job_id AND jhm.user_id = ?)
-                          OR EXISTS (SELECT 1 FROM job_interviewers ji WHERE ji.job_id = a.job_id AND ji.user_id = ?))';
-            $params[] = $userId;
-            $params[] = $userId;
+        list($accessSql, $accessParams) = PermissionService::applicationListAccessClause('j');
+        $where .= $accessSql;
+        $params = array_merge($params, $accessParams);
+
+        $scope = isset($_GET['scope']) ? $_GET['scope'] : '';
+        if ($scope === 'mine') {
+            $where .= ' AND a.recruiter_id = ?';
+            $params[] = auth_id();
+        }
+
+        if (!empty($_GET['recruiter_id']) && PermissionService::isAdminRole()) {
+            $where .= ' AND a.recruiter_id = ?';
+            $params[] = (int) $_GET['recruiter_id'];
+        }
+
+        $order = isset($_GET['order']) ? $_GET['order'] : 'created_desc';
+        $orderSql = 'a.created_at DESC';
+        if ($order === 'name') {
+            $orderSql = 'c.last_name ASC, c.first_name ASC';
+        } elseif ($order === 'recruiter') {
+            $orderSql = 'recruiter.last_name ASC, recruiter.first_name ASC, a.created_at DESC';
+        } elseif ($order === 'job') {
+            $orderSql = 'j.title ASC, a.created_at DESC';
         }
 
         $total = db()->fetch(
@@ -49,7 +66,9 @@ class CandidateController
 
         $candidates = db()->fetchAll(
             "SELECT a.id as application_id, a.job_id, a.candidate_id, a.status, a.decision, a.application_date, a.created_at, a.is_archived,
+                    a.recruiter_id,
                     c.first_name, c.last_name, c.email, c.resume_path, j.title as job_title, d.name as department_name,
+                    recruiter.first_name AS recruiter_first_name, recruiter.last_name AS recruiter_last_name,
                     ps.name as stage_name,
                     (SELECT TOP 1 ir.overall_score FROM interviews i2
                      LEFT JOIN interview_reports ir ON ir.interview_id = i2.id
@@ -71,18 +90,29 @@ class CandidateController
              JOIN candidates c ON c.id = a.candidate_id
              JOIN jobs j ON j.id = a.job_id
              LEFT JOIN departments d ON d.id = j.department_id
+             LEFT JOIN users recruiter ON recruiter.id = a.recruiter_id
              LEFT JOIN job_pipeline_stages ps ON ps.id = a.current_stage_id
              WHERE $where
-             ORDER BY a.created_at DESC" . sql_page($perPage, $offset),
+             ORDER BY $orderSql" . sql_page($perPage, $offset),
             $params
         );
+
+        $teamUsers = [];
+        if (PermissionService::isAdminRole()) {
+            $teamUsers = db()->fetchAll(
+                'SELECT id, first_name, last_name FROM users WHERE is_active = 1 ORDER BY first_name, last_name'
+            );
+        }
 
         render('candidates.index', [
             'title' => 'Candidates',
             'candidates' => $candidates,
             'departments' => db()->fetchAll('SELECT * FROM departments ORDER BY name'),
-            'jobs' => db()->fetchAll("SELECT id, title FROM jobs WHERE status = 'active' ORDER BY title"),
+            'jobs' => fetch_active_jobs_for_select(),
             'search' => $search,
+            'scope' => $scope,
+            'order' => $order,
+            'teamUsers' => $teamUsers,
             'perPage' => $perPage,
             'page' => $page,
             'total' => $total,
@@ -127,20 +157,13 @@ class CandidateController
                 CandidateService::reactivate($applicationId);
                 $count++;
             } elseif ($action === 'delete') {
-                if (!empty($ctx['resume_path'])) {
-                    $file = BASE_PATH . '/storage/resumes/' . $ctx['resume_path'];
-                    if (file_exists($file)) {
-                        @unlink($file);
-                    }
+                try {
+                    CandidateService::deleteApplication($applicationId);
+                    ActivityLogService::log('candidate_delete', 'application', $applicationId);
+                    $count++;
+                } catch (Exception $e) {
+                    // skip row; bulk continues
                 }
-                $candidateId = $ctx['candidate_id'];
-                db()->query('DELETE FROM applications WHERE id = ?', [$applicationId]);
-                $remaining = db()->fetch('SELECT COUNT(*) as c FROM applications WHERE candidate_id = ?', [$candidateId])['c'];
-                if ((int) $remaining === 0) {
-                    db()->query('DELETE FROM candidates WHERE id = ?', [$candidateId]);
-                }
-                ActivityLogService::log('candidate_delete', 'application', $applicationId);
-                $count++;
             }
         }
 
@@ -157,7 +180,8 @@ class CandidateController
 
         $newJobId = $_POST['new_job_id'] ?? '';
         $stageId = $_POST['new_pipeline_id'] ?? '';
-        $archiveCurrent = !empty($_POST['archive_current']);
+        $keepOnSourceJob = !empty($_POST['keep_on_source_job']);
+        $archiveCurrent = !$keepOnSourceJob;
 
         if (!$newJobId || !$stageId) {
             flash('error', 'Select target job and pipeline stage.');
@@ -191,10 +215,15 @@ class CandidateController
         $ctx = $this->applicationContext($applicationId);
         PermissionService::requireJobAccess($ctx['job_id']);
 
+        $recruiters = PermissionService::isAdminRole()
+            ? db()->fetchAll('SELECT id, first_name, last_name, email FROM users WHERE is_active = 1 ORDER BY first_name, last_name')
+            : [];
+
         render('candidates.edit', [
             'title' => 'Manage Candidate',
             'app' => $ctx,
-            'jobs' => db()->fetchAll("SELECT id, title FROM jobs WHERE status = 'active' ORDER BY title"),
+            'jobs' => fetch_active_jobs_for_select(),
+            'recruiters' => $recruiters,
             'sources' => db()->fetchAll('SELECT * FROM candidate_sources ORDER BY name'),
             'stages' => db()->fetchAll(
                 'SELECT id, name FROM job_pipeline_stages WHERE job_id = ? AND is_active = 1 ORDER BY sort_order',
@@ -213,6 +242,7 @@ class CandidateController
         verify_csrf();
         $ctx = $this->applicationContext($applicationId);
         PermissionService::requireJobAccess($ctx['job_id']);
+        PermissionService::requireManageCandidates();
 
         db()->update('candidates', [
             'first_name' => trim($_POST['first_name']),
@@ -227,12 +257,19 @@ class CandidateController
             'updated_at' => date('Y-m-d H:i:s'),
         ], 'id = :id', ['id' => $ctx['candidate_id']]);
 
-        db()->update('applications', [
+        $appUpdate = [
             'current_stage_id' => $_POST['pipeline_id'] ?: $ctx['current_stage_id'],
             'status' => $_POST['status'] ?? $ctx['status'],
             'decision' => $_POST['decision'] ?? $ctx['decision'],
+            'current_ctc' => trim($_POST['current_ctc'] ?? '') ?: null,
+            'expected_ctc' => trim($_POST['expected_ctc'] ?? '') ?: null,
             'updated_at' => date('Y-m-d H:i:s'),
-        ], 'id = :id', ['id' => $applicationId]);
+        ];
+        if (PermissionService::isAdminRole() && isset($_POST['recruiter_id'])) {
+            $rid = (int) $_POST['recruiter_id'];
+            $appUpdate['recruiter_id'] = $rid > 0 ? $rid : null;
+        }
+        db()->update('applications', $appUpdate, 'id = :id', ['id' => $applicationId]);
 
         $resumeFailed = false;
         if (!empty($_FILES['resume']['name'])) {
@@ -262,11 +299,7 @@ class CandidateController
         $ctx = $this->applicationContext($applicationId);
         PermissionService::requireJobAccess($ctx['job_id']);
 
-        db()->update('applications', [
-            'is_archived' => 1,
-            'status' => 'cancelled',
-            'updated_at' => date('Y-m-d H:i:s'),
-        ], 'id = :id', ['id' => $applicationId]);
+        CandidateService::archiveApplication($applicationId);
 
         ActivityLogService::log('candidate_archive', 'application', $applicationId);
         flash('success', 'Candidate archived for this job.');
@@ -292,23 +325,15 @@ class CandidateController
         $ctx = $this->applicationContext($applicationId);
         PermissionService::requireJobAccess($ctx['job_id']);
 
-        if (!empty($ctx['resume_path'])) {
-            $file = BASE_PATH . '/storage/resumes/' . $ctx['resume_path'];
-            if (file_exists($file)) {
-                @unlink($file);
-            }
+        try {
+            CandidateService::deleteApplication($applicationId);
+            ActivityLogService::log('candidate_delete', 'application', $applicationId);
+            flash('success', 'Candidate removed from this job.');
+        } catch (Exception $e) {
+            flash('error', 'Could not remove application: ' . $e->getMessage());
+            redirect(url('applications/' . $applicationId . '/manage'));
         }
 
-        $candidateId = $ctx['candidate_id'];
-        db()->query('DELETE FROM applications WHERE id = ?', [$applicationId]);
-
-        $remaining = db()->fetch('SELECT COUNT(*) as c FROM applications WHERE candidate_id = ?', [$candidateId])['c'];
-        if ((int) $remaining === 0) {
-            db()->query('DELETE FROM candidates WHERE id = ?', [$candidateId]);
-        }
-
-        ActivityLogService::log('candidate_delete', 'application', $applicationId);
-        flash('success', 'Candidate application removed.');
         redirect(url('candidates'));
     }
 
@@ -317,10 +342,14 @@ class CandidateController
         $row = db()->fetch(
             'SELECT a.*, c.first_name, c.last_name, c.email, c.phone, c.phone_country_code,
                     c.resume_path, c.years_experience, c.current_company, c.current_location, c.source_id,
-                    j.title as job_title
+                    j.title as job_title, j.created_by AS job_created_by,
+                    recruiter.first_name AS recruiter_first_name, recruiter.last_name AS recruiter_last_name,
+                    job_creator.first_name AS job_creator_first_name, job_creator.last_name AS job_creator_last_name
              FROM applications a
              JOIN candidates c ON c.id = a.candidate_id
              JOIN jobs j ON j.id = a.job_id
+             LEFT JOIN users recruiter ON recruiter.id = a.recruiter_id
+             LEFT JOIN users job_creator ON job_creator.id = j.created_by
              WHERE a.id = ?',
             [$applicationId]
         );
@@ -409,7 +438,7 @@ class CandidateController
         $pipelineId = isset($_GET['pipeline_id']) ? $_GET['pipeline_id'] : '';
         render('candidates.create', [
             'title' => 'Add Candidate',
-            'jobs' => db()->fetchAll("SELECT id, title FROM jobs WHERE status = 'active' ORDER BY title"),
+            'jobs' => fetch_active_jobs_for_select(),
             'sources' => db()->fetchAll('SELECT * FROM candidate_sources ORDER BY name'),
             'selectedJobId' => $jobId,
             'selectedPipelineId' => $pipelineId,
@@ -427,6 +456,36 @@ class CandidateController
     {
         verify_csrf();
         $this->storeInternal(url('candidates'));
+    }
+
+    public function previewBulkImport()
+    {
+        verify_csrf();
+        $jobId = trim($_POST['job_id'] ?? '');
+        if ($jobId === '') {
+            json_response(['error' => 'Select a job role first.'], 400);
+        }
+        if (empty($_FILES['resumes'])) {
+            json_response(['error' => 'No resume files uploaded.'], 400);
+        }
+
+        $splitCompiled = !empty($_POST['split_compiled_pdf']);
+        $expanded = BulkResumeImportService::expandFiles($_FILES['resumes'], $splitCompiled);
+        if ($expanded === []) {
+            json_response(['error' => 'No valid files to import.'], 400);
+        }
+
+        $items = [];
+        foreach ($expanded as $i => $file) {
+            $items[] = $this->bulkPreviewItem($file, $i, $jobId);
+        }
+
+        json_response([
+            'items' => $items,
+            'source_file_count' => $this->countUploadedFiles($_FILES['resumes']),
+            'candidate_count' => count($items),
+            'split_applied' => count($items) > $this->countUploadedFiles($_FILES['resumes']),
+        ]);
     }
 
     public function parseResume()
@@ -476,13 +535,29 @@ class CandidateController
 
         if ($tab === 'resume') {
             $resumeCount = $this->countUploadedFiles($_FILES['resumes'] ?? null);
-            $email = trim($_POST['email'] ?? '');
-            if ($resumeCount === 1 && $email !== '') {
-                $this->handleSingleResumeWithCard($jobId, $stageId, $redirectAfter);
-                return;
+            if ($resumeCount > 0) {
+                $email = trim($_POST['email'] ?? '');
+                $multiInOnePdf = false;
+                if ($resumeCount === 1 && !empty($_FILES['resumes']['tmp_name'])) {
+                    $tmp = is_array($_FILES['resumes']['tmp_name'])
+                        ? $_FILES['resumes']['tmp_name'][0]
+                        : $_FILES['resumes']['tmp_name'];
+                    $uploadName = is_array($_FILES['resumes']['name']) ? $_FILES['resumes']['name'][0] : $_FILES['resumes']['name'];
+                    if (is_readable($tmp) && strtolower(pathinfo($uploadName, PATHINFO_EXTENSION)) === 'pdf') {
+                        $multiInOnePdf = BulkResumeImportService::pdfLikelyContainsMultipleCvs($tmp);
+                    }
+                }
+                if ($resumeCount === 1 && $email !== '' && !$multiInOnePdf) {
+                    $this->handleSingleResumeWithCard($jobId, $stageId, $redirectAfter);
+                    return;
+                }
+                if (!empty($_POST['bulk_preview_confirmed']) && !empty($_POST['bulk_items'])) {
+                    $this->handleResumeUploadFromPreview($jobId, $stageId, $redirectAfter);
+                    return;
+                }
+                flash('error', 'Use “Preview import” first, review or fix each row, then “Add candidates”.');
+                redirect(url('candidates/create?job_id=' . urlencode($jobId)));
             }
-            $this->handleResumeUpload($jobId, $stageId, $redirectAfter);
-            return;
         }
 
         $parsed = [];
@@ -599,11 +674,64 @@ class CandidateController
         if (!$interview) {
             json_response(['error' => 'Not found'], 404);
         }
+        PermissionService::requireJobAccess($interview['job_id']);
         $user = auth_user();
         if ($user && !empty($user['email'])) {
             $interview['default_organizer_email'] = $user['email'];
         }
+        $interview['scheduled_start'] = normalize_time_input($interview['scheduled_start'] ?? '');
+        $interview['scheduled_end'] = normalize_time_input($interview['scheduled_end'] ?? '');
         json_response(['interview' => $interview]);
+    }
+
+    public function requeueAnalysis($id)
+    {
+        verify_csrf();
+        $interview = db()->fetch(
+            'SELECT i.*, a.job_id FROM interviews i JOIN applications a ON a.id = i.application_id WHERE i.id = ?',
+            [$id]
+        );
+        if (!$interview) {
+            flash('error', 'Interview not found.');
+            redirect(url('candidates'));
+        }
+        PermissionService::requireJobAccess($interview['job_id']);
+        $redirect = url('jobs/' . $interview['job_id'] . '/interviews');
+
+        try {
+            InterviewWorkflowService::requeueAnalyze($id);
+            flash('success', 'Analysis queued. Ensure queue worker is running (cron/queue_worker.php).');
+        } catch (Exception $e) {
+            flash('error', $e->getMessage());
+        }
+        redirect($redirect);
+    }
+
+    public function fetchRecordingNow($id)
+    {
+        verify_csrf();
+        $interview = db()->fetch(
+            'SELECT i.*, a.job_id FROM interviews i JOIN applications a ON a.id = i.application_id WHERE i.id = ?',
+            [$id]
+        );
+        if (!$interview) {
+            flash('error', 'Interview not found.');
+            redirect(url('candidates'));
+        }
+        PermissionService::requireJobAccess($interview['job_id']);
+        $redirect = url('jobs/' . $interview['job_id'] . '/interviews');
+
+        try {
+            $teams = new TeamsRecordingService();
+            if ($teams->forceQueueRecordingFetch($id)) {
+                flash('success', 'Recording fetch queued. Run queue worker or wait ~1 minute.');
+            } else {
+                flash('error', 'Could not queue fetch — check Teams link, organizer email, and Graph config.');
+            }
+        } catch (Exception $e) {
+            flash('error', $e->getMessage());
+        }
+        redirect($redirect);
     }
 
     public function registerTeamsLink($id)
@@ -616,6 +744,11 @@ class CandidateController
         }
 
         $app = db()->fetch('SELECT * FROM applications WHERE id = ?', [$interview['application_id']]);
+        if (!$app) {
+            flash('error', 'Application not found.');
+            redirect(url('candidates'));
+        }
+        PermissionService::requireJobAccess($app['job_id']);
         $redirect = url('jobs/' . $app['job_id'] . '/interviews');
 
         $meetingUrl = trim($_POST['meeting_url'] ?? '');
@@ -632,13 +765,14 @@ class CandidateController
             redirect($redirect);
         }
 
+        list($scheduledStart, $scheduledEnd) = $this->scheduleTimesFromPost($_POST);
+
         db()->update('interviews', [
             'scheduled_date' => $scheduledDate,
-            'scheduled_start' => $_POST['scheduled_start'] ?: null,
-            'scheduled_end' => $_POST['scheduled_end'] ?: null,
+            'scheduled_start' => $scheduledStart,
+            'scheduled_end' => $scheduledEnd,
             'status' => 'scheduled',
             'meeting_url' => $meetingUrl,
-            'recording_fetch_state' => 'waiting',
         ], 'id = :id', ['id' => $id]);
 
         db()->update('applications', [
@@ -651,14 +785,12 @@ class CandidateController
                 $id,
                 $meetingUrl,
                 $scheduledDate,
-                $_POST['scheduled_end'] ?: null,
+                $scheduledEnd,
                 $organizerEmail !== '' ? $organizerEmail : null
             );
             $teams->queueRecordingFetchIfDue($id);
         } catch (Exception $e) {
-            $teams = new TeamsRecordingService();
-            $teams->ensureRecordingPolling($id, $scheduledDate, $_POST['scheduled_end'] ?: null);
-            flash('error', 'Teams link saved, but Graph setup failed: ' . $e->getMessage() . ' Re-save after fixing Graph, or contact IT.');
+            flash('error', 'Date and link saved, but Teams was not registered for recording: ' . $e->getMessage() . ' Check host email and Graph config, then save again.');
             redirect($redirect);
         }
 
@@ -669,19 +801,25 @@ class CandidateController
     public function updateDetails($id)
     {
         verify_csrf();
-        $interview = db()->fetch('SELECT * FROM interviews WHERE id = ?', [$id]);
+        $interview = db()->fetch(
+            'SELECT i.*, a.job_id FROM interviews i JOIN applications a ON a.id = i.application_id WHERE i.id = ?',
+            [$id]
+        );
         if (!$interview) {
             flash('error', 'Interview not found.');
             redirect(url('candidates'));
         }
+        PermissionService::requireJobAccess($interview['job_id']);
 
         $scheduledDate = $_POST['scheduled_date'] ?: null;
         $manualMeetingUrl = trim($_POST['meeting_url'] ?? '');
+        list($scheduledStart, $scheduledEnd) = $this->scheduleTimesFromPost($_POST);
+        $organizerEmail = trim($_POST['organizer_email'] ?? '');
         $interviewUpdate = [
             'stage_id' => $_POST['stage_id'],
             'scheduled_date' => $scheduledDate,
-            'scheduled_start' => $_POST['scheduled_start'] ?: null,
-            'scheduled_end' => $_POST['scheduled_end'] ?: null,
+            'scheduled_start' => $scheduledStart,
+            'scheduled_end' => $scheduledEnd,
             'status' => $scheduledDate ? 'scheduled' : 'pending',
         ];
         if ($manualMeetingUrl !== '') {
@@ -707,14 +845,31 @@ class CandidateController
             $teams = new TeamsRecordingService();
             $teamsMsg = '';
             $teamsError = null;
+            $teamsRecording = false;
             try {
                 if ($manualMeetingUrl === '' && $teams->autoCreateEnabled() && empty($interview['teams_meeting_id'])) {
                     $teams->createMeetingForInterview($id);
                     $teamsMsg = ' Teams meeting created under your account.';
+                    $teamsRecording = true;
                 } elseif ($manualMeetingUrl === '' && !empty($interview['teams_meeting_id'])) {
-                    $teams->ensureRecordingPolling($id, $scheduledDate, $_POST['scheduled_end'] ?: null);
-                } elseif ($manualMeetingUrl !== '' && $this->detectMeetingType($manualMeetingUrl) === 'teams' && $teams->graphReady()) {
-                    $teams->registerManualTeamsLink($id, $manualMeetingUrl, $scheduledDate, $_POST['scheduled_end'] ?: null);
+                    $teams->ensureRecordingPolling($id, $scheduledDate, $scheduledEnd, $scheduledStart);
+                    $teamsRecording = true;
+                } elseif ($manualMeetingUrl !== '' && $this->detectMeetingType($manualMeetingUrl) === 'teams') {
+                    if (!$this->isTeamsJoinUrl($manualMeetingUrl)) {
+                        $teamsError = 'Use the Teams join link from the invite, not a meeting recap / recording URL.';
+                    } elseif (!$teams->graphReady()) {
+                        $teamsError = 'Microsoft Graph is not configured — Teams recording cannot be registered.';
+                    } else {
+                        $teams->registerManualTeamsLink(
+                            $id,
+                            $manualMeetingUrl,
+                            $scheduledDate,
+                            $scheduledEnd,
+                            $organizerEmail !== '' ? $organizerEmail : null
+                        );
+                        $teams->queueRecordingFetchIfDue($id);
+                        $teamsRecording = true;
+                    }
                 }
             } catch (Exception $e) {
                 $teamsError = $e->getMessage();
@@ -730,9 +885,11 @@ class CandidateController
             }
 
             if ($teamsError) {
-                flash('error', 'Interview saved, but Teams could not be set up: ' . $teamsError);
-            } else {
+                flash('error', 'Interview saved, but Teams recording setup failed: ' . $teamsError);
+            } elseif ($teamsRecording) {
                 flash('success', 'Interview scheduled.' . $teamsMsg . ' Recording will be captured automatically after the call.');
+            } else {
+                flash('success', 'Interview scheduled.');
             }
             redirect(url('jobs/' . $app['job_id'] . '/interviews'));
         }
@@ -810,6 +967,8 @@ class CandidateController
         header('Content-Type: ' . $mime);
         if ($preview && $ext === 'pdf') {
             header('Content-Disposition: inline; filename="' . $name . '"');
+            header('X-Frame-Options: SAMEORIGIN');
+            header('Cache-Control: private, max-age=300');
         } else {
             header('Content-Disposition: attachment; filename="' . $name . '"');
         }
@@ -826,6 +985,7 @@ class CandidateController
             flash('error', 'Interview not found.');
             redirect(url('candidates'));
         }
+        PermissionService::requireJobAccess($interview['job_id']);
 
         $redirect = safe_app_redirect(
             isset($_POST['redirect_to']) ? $_POST['redirect_to'] : '',
@@ -926,15 +1086,24 @@ class CandidateController
                 'processing_status' => 'pending',
             ]);
 
-            if ($this->detectMeetingType($meetingUrl) === 'teams') {
+            if ($this->detectMeetingType($meetingUrl) === 'teams' && $this->isTeamsJoinUrl($meetingUrl)) {
                 $teams = new TeamsRecordingService();
                 if ($teams->graphReady()) {
-                    $queue = new QueueService();
-                    $queue->push('FetchTeamsRecording', [
-                        'interview_id' => $id,
-                        'media_id' => $mediaId,
-                    ]);
-                    flash('success', 'Teams link saved. Fetching recording from Microsoft...');
+                    try {
+                        $row = db()->fetch('SELECT scheduled_date, scheduled_start, scheduled_end FROM interviews WHERE id = ?', [$id]);
+                        $org = trim($_POST['organizer_email'] ?? '') ?: null;
+                        $teams->registerManualTeamsLink(
+                            $id,
+                            $meetingUrl,
+                            $row['scheduled_date'] ?? date('Y-m-d'),
+                            $row['scheduled_end'] ?? null,
+                            $org
+                        );
+                        $teams->queueRecordingFetchIfDue($id);
+                        flash('success', 'Teams link registered. Fetching recording from Microsoft when ready...');
+                    } catch (Exception $e) {
+                        flash('error', 'Link saved but Teams registration failed: ' . $e->getMessage());
+                    }
                 } else {
                     flash('success', 'Meeting link saved. Configure Graph sync app to auto-fetch Teams recordings.');
                 }
@@ -946,17 +1115,20 @@ class CandidateController
         redirect($redirect);
     }
 
-    private function createApplication($candidateId, $jobId, $stageId)
+    private function createApplication($candidateId, $jobId, $stageId, array $applicationExtras = [])
     {
         $appId = uuid();
-        db()->insert('applications', [
+        $recruiterId = auth_id();
+        $ctc = $this->normalizeApplicationCtc($applicationExtras !== [] ? $applicationExtras : $_POST);
+        db()->insert('applications', array_merge([
             'id' => $appId,
             'candidate_id' => $candidateId,
             'job_id' => $jobId,
             'current_stage_id' => $stageId,
             'status' => 'pending',
             'application_date' => date('Y-m-d'),
-        ]);
+            'recruiter_id' => $recruiterId ?: null,
+        ], $ctc));
 
         $interviewId = uuid();
         db()->insert('interviews', [
@@ -1096,6 +1268,17 @@ class CandidateController
         redirect($redirectAfter);
     }
 
+    private function normalizeApplicationCtc(array $data)
+    {
+        $current = trim((string) ($data['current_ctc'] ?? ''));
+        $expected = trim((string) ($data['expected_ctc'] ?? ''));
+
+        return [
+            'current_ctc' => $current !== '' ? $current : null,
+            'expected_ctc' => $expected !== '' ? $expected : null,
+        ];
+    }
+
     private function resolveSourceId($post, $filename = '')
     {
         if (!empty($post['source_id'])) {
@@ -1110,76 +1293,169 @@ class CandidateController
         return null;
     }
 
-    private function handleResumeUpload($jobId, $stageId, $redirectAfter = null)
+    private function handleResumeUploadFromPreview($jobId, $stageId, $redirectAfter = null)
     {
         $redirectAfter = $redirectAfter ?: url('candidates');
         if (empty($_FILES['resumes'])) {
-            flash('error', 'No files uploaded.');
+            flash('error', 'Files missing — run Preview import again with the same files attached.');
             redirect(url('candidates/create?job_id=' . $jobId));
         }
-        $files = $_FILES['resumes'];
-        $count = is_array($files['name']) ? count($files['name']) : 1;
-        $parsedOk = 0;
-        for ($i = 0; $i < $count; $i++) {
-            $file = [
-                'name' => is_array($files['name']) ? $files['name'][$i] : $files['name'],
-                'tmp_name' => is_array($files['tmp_name']) ? $files['tmp_name'][$i] : $files['tmp_name'],
-                'error' => is_array($files['error']) ? $files['error'][$i] : $files['error'],
-                'size' => is_array($files['size']) ? $files['size'][$i] : $files['size'],
-            ];
-            if ($file['error'] === UPLOAD_ERR_NO_FILE) {
+
+        $rows = json_decode($_POST['bulk_items'] ?? '', true);
+        if (!is_array($rows)) {
+            flash('error', 'Invalid preview data. Run Preview import again.');
+            redirect(url('candidates/create?job_id=' . $jobId));
+        }
+
+        $splitCompiled = !empty($_POST['split_compiled_pdf']);
+        $expanded = BulkResumeImportService::expandFiles($_FILES['resumes'], $splitCompiled);
+        $stats = ['added' => 0, 'skipped' => 0, 'excluded' => 0];
+
+        foreach ($rows as $rowIn) {
+            if (empty($rowIn['include'])) {
+                $stats['excluded']++;
                 continue;
             }
-            $parsed = $this->parseResumeFile($file);
-            $row = $this->candidateRowFromRequest([], $parsed, $file['name']);
-            if ($row['email'] === '') {
-                $row['email'] = 'import' . uuid() . '@pending.local';
+            $idx = (int) ($rowIn['file_index'] ?? -1);
+            if (!isset($expanded[$idx])) {
+                continue;
             }
-            if ($row['first_name'] === 'Candidate' && $row['last_name'] === '') {
-                $row['last_name'] = (string) ($i + 1);
+            $file = $expanded[$idx];
+            $row = $this->bulkRowFromPreviewPost($rowIn);
+            $result = $this->importOneBulkResume($jobId, $stageId, $file, $row, $idx);
+            if ($result === 'skipped') {
+                $stats['skipped']++;
+            } elseif ($result === 'added') {
+                $stats['added']++;
             }
-            $email = $row['email'];
-            $first = $row['first_name'];
-            $last = $row['last_name'];
+        }
 
+        $src = $this->countUploadedFiles($_FILES['resumes']);
+        $msg = $stats['added'] . ' candidate(s) added from ' . $src . ' uploaded file(s).';
+        if ($stats['skipped']) {
+            $msg .= ' ' . $stats['skipped'] . ' skipped (already on this job).';
+        }
+        if ($stats['excluded']) {
+            $msg .= ' ' . $stats['excluded'] . ' excluded in preview.';
+        }
+        flash('success', $msg);
+        redirect($redirectAfter);
+    }
+
+    private function bulkPreviewItem(array $file, $fileIndex, $jobId)
+    {
+        if (!empty($file['parsed_text'])) {
+            $parsed = (new ResumeParserService())->parseText($file['parsed_text']);
+        } else {
+            $parsed = $this->parseResumeFile($file);
+        }
+        $row = $this->candidateRowFromRequest([], $parsed, $file['name']);
+        $email = $row['email'];
+        $parseWeak = ($email === '' || ($row['first_name'] === 'Candidate' && $row['last_name'] === ''));
+        $alreadyOnJob = false;
+        if ($email !== '') {
             $existing = CandidateService::findByEmail($email);
             if ($existing && CandidateService::applicationOnJob($existing['id'], $jobId)) {
-                continue;
+                $alreadyOnJob = true;
             }
-            if ($existing) {
-                $candidateId = $existing['id'];
-                (new ResumeParserService())->applyToCandidate($candidateId, $parsed);
-            } else {
-                $candidateId = uuid();
-                db()->insert('candidates', [
-                    'id' => $candidateId,
-                    'first_name' => $first,
-                    'last_name' => $last,
-                    'email' => $email,
-                    'phone' => $row['phone'] ?: null,
-                    'phone_country_code' => $row['phone_country_code'],
-                    'years_experience' => $row['years_experience'],
-                    'current_company' => $row['current_company'],
-                    'source_id' => $row['source_id'],
-                ]);
-                if (strpos($email, '@pending.local') === false) {
-                    $parsedOk++;
-                }
-            }
+        }
+
+        return [
+            'file_index' => $fileIndex,
+            'label' => $file['source_label'] ?? $file['name'],
+            'file_name' => $file['name'],
+            'first_name' => $row['first_name'],
+            'last_name' => $row['last_name'],
+            'email' => $email,
+            'phone_country_code' => $row['phone_country_code'],
+            'phone' => $row['phone'],
+            'years_experience' => $row['years_experience'],
+            'current_company' => $row['current_company'] ?? '',
+            'parse_weak' => $parseWeak,
+            'already_on_job' => $alreadyOnJob,
+            'include' => !$alreadyOnJob,
+        ];
+    }
+
+    private function bulkRowFromPreviewPost(array $rowIn)
+    {
+        return [
+            'first_name' => trim($rowIn['first_name'] ?? '') !== '' ? trim($rowIn['first_name']) : 'Candidate',
+            'last_name' => trim($rowIn['last_name'] ?? ''),
+            'email' => trim($rowIn['email'] ?? ''),
+            'phone_country_code' => trim($rowIn['phone_country_code'] ?? '') ?: '+91',
+            'phone' => trim($rowIn['phone'] ?? ''),
+            'years_experience' => isset($rowIn['years_experience']) && $rowIn['years_experience'] !== ''
+                ? (float) $rowIn['years_experience'] : null,
+            'current_company' => trim($rowIn['current_company'] ?? '') ?: null,
+            'current_ctc' => trim($rowIn['current_ctc'] ?? '') ?: null,
+            'expected_ctc' => trim($rowIn['expected_ctc'] ?? '') ?: null,
+            'source_id' => !empty($rowIn['source_id']) ? $rowIn['source_id'] : $this->resolveSourceId($_POST),
+        ];
+    }
+
+    /**
+     * @return string added|skipped|failed
+     */
+    private function importOneBulkResume($jobId, $stageId, array $file, array $row, $index)
+    {
+        if ($row['email'] === '') {
+            $row['email'] = 'import' . uuid() . '@pending.local';
+        }
+        if ($row['first_name'] === 'Candidate' && $row['last_name'] === '') {
+            $row['last_name'] = (string) ($index + 1);
+        }
+
+        $existing = CandidateService::findByEmail($row['email']);
+        if ($existing && CandidateService::applicationOnJob($existing['id'], $jobId)) {
+            return 'skipped';
+        }
+
+        if ($existing) {
+            $candidateId = $existing['id'];
+            db()->update('candidates', [
+                'first_name' => $row['first_name'],
+                'last_name' => $row['last_name'],
+                'phone_country_code' => $row['phone_country_code'],
+                'phone' => $row['phone'],
+                'years_experience' => $row['years_experience'],
+                'current_company' => $row['current_company'],
+                'source_id' => $row['source_id'],
+                'updated_at' => date('Y-m-d H:i:s'),
+            ], 'id = :id', ['id' => $candidateId]);
+        } else {
+            $candidateId = uuid();
+            db()->insert('candidates', [
+                'id' => $candidateId,
+                'first_name' => $row['first_name'],
+                'last_name' => $row['last_name'],
+                'email' => $row['email'],
+                'phone_country_code' => $row['phone_country_code'],
+                'phone' => $row['phone'] ?: null,
+                'years_experience' => $row['years_experience'],
+                'current_company' => $row['current_company'],
+                'source_id' => $row['source_id'],
+            ]);
+        }
+
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if ($ext !== 'txt') {
             try {
                 $this->storeResume($file, $candidateId);
             } catch (RuntimeException $e) {
                 flash('error', $e->getMessage());
                 redirect(url('candidates/create?job_id=' . $jobId));
             }
-            if (!$existing) {
-                $this->createApplication($candidateId, $jobId, $stageId);
-            } elseif (!CandidateService::applicationOnJob($candidateId, $jobId)) {
-                $this->createApplication($candidateId, $jobId, $stageId);
-            }
         }
-        flash('success', "$count resume(s) uploaded." . ($parsedOk ? " Parsed $parsedOk profile(s)." : ''));
-        redirect($redirectAfter);
+
+        $appExtras = $this->normalizeApplicationCtc($row);
+        if (!$existing) {
+            $this->createApplication($candidateId, $jobId, $stageId, $appExtras);
+        } elseif (!CandidateService::applicationOnJob($candidateId, $jobId)) {
+            $this->createApplication($candidateId, $jobId, $stageId, $appExtras);
+        }
+
+        return 'added';
     }
 
     private function handleBulkImport($jobId, $stageId, $redirectAfter = null)
@@ -1276,5 +1552,15 @@ class CandidateController
             return false;
         }
         return true;
+    }
+
+    private function scheduleTimesFromPost(array $post)
+    {
+        $start = normalize_time_store($post['scheduled_start'] ?? null);
+        $end = normalize_time_store($post['scheduled_end'] ?? null);
+        if ($start && !$end) {
+            $end = interview_default_end_time($start);
+        }
+        return [$start, $end];
     }
 }

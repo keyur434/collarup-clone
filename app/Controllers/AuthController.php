@@ -12,7 +12,7 @@ class AuthController
 
         if (auth_check()) {
 
-            redirect(url('dashboard'));
+            auth_redirect_after_login();
 
         }
 
@@ -66,7 +66,7 @@ class AuthController
 
         $this->startSession($user);
 
-        redirect(url('dashboard'));
+        auth_redirect_after_login();
 
     }
 
@@ -162,7 +162,7 @@ class AuthController
 
         $this->startSession($user);
 
-        redirect(url('dashboard'));
+        auth_redirect_after_login();
 
     }
 
