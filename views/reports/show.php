@@ -5,7 +5,13 @@ $scoreClass = $sl['class'] === 'score-good' ? 'good' : ($sl['class'] === 'score-
 $showIntegrityUi = !empty(config('app')['show_integrity_ui']);
 $hasScore = $report['overall_score'] !== null && $report['overall_score'] !== '';
 $applicationDecision = $report['application_decision'] ?? 'none';
-$reportUrl = url('jobs/' . $report['job_id'] . '/reports/' . $report['id']);
+$isSharedReport = !empty($sharedReportView);
+$reportUrl = $isSharedReport
+    ? ($sharedReportUrl ?? url('jobs/' . $report['job_id'] . '/reports/' . $report['id']))
+    : url('jobs/' . $report['job_id'] . '/reports/' . $report['id']);
+$exportUrl = $isSharedReport
+    ? ($sharedExportUrl ?? $reportUrl . '/export')
+    : url('jobs/' . $report['job_id'] . '/reports/' . $report['id'] . '/export');
 $aiSummaryText = '';
 if (!empty($enhanced['grounding_safe_summary'])) {
     $aiSummaryText = $enhanced['grounding_safe_summary'];
@@ -24,11 +30,24 @@ if ($transcript && !empty($transcript['segments'])) {
         $transcriptSegments = $decoded;
     }
 }
-$breadcrumbs = [
-    ['label' => 'Dashboard', 'url' => url('dashboard')],
-    ['label' => 'Candidate Report'],
-];
+$breadcrumbs = $isSharedReport
+    ? [
+        ['label' => $report['job_title']],
+        ['label' => trim($report['first_name'] . ' ' . ($report['last_name'] ?? ''))],
+    ]
+    : [
+        ['label' => 'Dashboard', 'url' => url('dashboard')],
+        ['label' => 'Job Roles', 'url' => url('jobs')],
+        ['label' => $report['job_title'], 'url' => url('jobs/' . $report['job_id'] . '/interviews')],
+        ['label' => trim($report['first_name'] . ' ' . ($report['last_name'] ?? ''))],
+    ];
 ?>
+
+<?php if ($isSharedReport): ?>
+<div class="alert" role="status" style="margin-bottom:16px;background:var(--gray-50,#f8fafc);border:1px solid var(--gray-200);color:var(--text-muted);font-size:0.85rem">
+    Shared interview report — read-only. Bookmark this page to return anytime.
+</div>
+<?php endif; ?>
 
 <!-- Report Header -->
 <div class="report-header">
@@ -50,7 +69,7 @@ $breadcrumbs = [
         </div>
     </div>
     <div class="report-header-right">
-        <?php if (!empty($canEditReport)): ?>
+        <?php if (!$isSharedReport && !empty($canEditReport)): ?>
         <form method="POST" action="<?= url('jobs/' . $report['job_id'] . '/reports/' . $report['id'] . '/stage') ?>" id="reportStageForm">
             <?= csrf_field() ?>
             <select class="stage-select-inline" name="stage_id" onchange="this.form.submit()" title="Move to pipeline stage">
@@ -59,22 +78,26 @@ $breadcrumbs = [
                 <?php endforeach; ?>
             </select>
         </form>
-        <?php else: ?>
+        <?php elseif (!$isSharedReport): ?>
         <select class="stage-select-inline" disabled title="Pipeline stage">
             <?php foreach ($stages as $s): ?>
             <option value="<?= e($s['id']) ?>" <?= ($s['id'] === ($report['current_stage_id'] ?? '')) ? 'selected' : '' ?>><?= e($s['name']) ?></option>
             <?php endforeach; ?>
         </select>
         <?php endif; ?>
-        <?php if (!empty($canEditReport)): ?>
+        <?php if (!$isSharedReport && !empty($canEditReport)): ?>
         <form method="POST" action="<?= url('jobs/' . $report['job_id'] . '/reports/' . $report['id'] . '/decision') ?>" style="display:contents">
             <?= csrf_field() ?>
             <button name="decision" value="reject" class="btn btn-reject btn-sm<?= $applicationDecision === 'reject' ? ' active' : '' ?>">Reject</button>
             <button name="decision" value="hold" class="btn btn-hold btn-sm<?= $applicationDecision === 'hold' ? ' active' : '' ?>">Hold</button>
             <button name="decision" value="advance" class="btn btn-advance btn-sm<?= $applicationDecision === 'advance' ? ' active' : '' ?>">Advance</button>
+            <?php if (!empty($hasOfferStage)): ?>
+            <button name="decision" value="offer" class="btn btn-primary btn-sm<?= $applicationDecision === 'offer' ? ' active' : '' ?>">Offer</button>
+            <?php endif; ?>
         </form>
         <?php endif; ?>
-        <a href="<?= url('jobs/' . $report['job_id'] . '/reports/' . $report['id'] . '/export') ?>" target="_blank" class="btn btn-outline btn-sm">Export PDF</a>
+        <a href="<?= e($exportUrl) ?>" target="_blank" class="btn btn-outline btn-sm">Export PDF</a>
+        <?php if (!$isSharedReport): ?>
         <div class="report-actions-wrap" style="position:relative;display:inline-block">
             <button type="button" class="icon-btn" onclick="toggleReportMenu(this)" title="More actions" aria-haspopup="true" aria-expanded="false">
                 <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
@@ -82,12 +105,48 @@ $breadcrumbs = [
             <div class="report-actions-menu hidden" role="menu">
                 <a href="<?= url('applications/' . $report['application_id'] . '/manage') ?>" role="menuitem">Edit candidate</a>
                 <a href="<?= url('jobs/' . $report['job_id'] . '/interviews') ?>" role="menuitem">Job interviews</a>
-                <a href="<?= url('jobs/' . $report['job_id'] . '/reports/' . $report['id'] . '/export') ?>" target="_blank" role="menuitem">Export PDF</a>
+                <a href="<?= e($exportUrl) ?>" target="_blank" role="menuitem">Export PDF</a>
                 <button type="button" role="menuitem" onclick="copyReportLink()">Copy report link</button>
             </div>
         </div>
+        <?php endif; ?>
     </div>
 </div>
+
+<?php if (!empty($interviewRounds) && count($interviewRounds) > 0): ?>
+<div class="hiring-rounds-strip" style="margin-bottom:16px;padding:12px 16px;background:var(--gray-50,#f8fafc);border:1px solid var(--gray-200);border-radius:8px">
+    <div style="font-size:0.78rem;font-weight:600;color:var(--text-muted);margin-bottom:8px">Interview rounds for this candidate</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <?php foreach ($interviewRounds as $round):
+            $isThisReport = !empty($round['report_id']) && $round['report_id'] === $report['id'];
+            $isCurrent = !empty($currentStageInterview['id']) && $round['interview_id'] === $currentStageInterview['id'];
+        ?>
+        <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:6px;border:1px solid <?= $isThisReport ? 'var(--primary)' : 'var(--gray-200)' ?>;background:<?= $isCurrent ? 'var(--surface)' : 'transparent' ?>;font-size:0.8rem">
+            <span style="font-weight:600"><?= e($round['stage_name']) ?></span>
+            <?php if ($round['status'] === 'completed' && !empty($round['report_id'])): ?>
+            <a href="<?= url('jobs/' . $report['job_id'] . '/reports/' . $round['report_id']) ?>" style="color:var(--primary)"><?= e($round['overall_score'] ?? 'Report') ?></a>
+            <?php elseif (in_array($round['status'], ['pending', 'scheduled'], true)): ?>
+            <span style="color:var(--text-muted)"><?= e(ucfirst($round['status'])) ?></span>
+            <?php if ($isCurrent && !empty($canEditReport)): ?>
+            <a href="<?= url('jobs/' . $report['job_id'] . '/interviews?focus=' . urlencode($round['interview_id'])) ?>" style="color:var(--primary);font-weight:600">Schedule →</a>
+            <?php endif; ?>
+            <?php else: ?>
+            <span style="color:var(--text-muted)"><?= e(ucfirst($round['status'] ?? 'pending')) ?></span>
+            <?php endif; ?>
+            <?php if ($isCurrent): ?><span class="badge" style="font-size:0.65rem">Current</span><?php endif; ?>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    <?php
+    $nextIv = $currentStageInterview ?? null;
+    if (!empty($canEditReport) && $nextIv && in_array($nextIv['status'] ?? '', ['pending', 'scheduled'], true)
+        && ($nextIv['id'] ?? '') !== ($report['interview_id'] ?? '')): ?>
+    <p style="margin:10px 0 0;font-size:0.82rem">
+        Next step: <a href="<?= url('jobs/' . $report['job_id'] . '/interviews?focus=' . urlencode($nextIv['id'])) ?>">Add meeting link for the current round</a>, then sync recording after the call.
+    </p>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <!-- Report Layout -->
 <div class="report-layout">
@@ -108,7 +167,7 @@ $breadcrumbs = [
             $meta = isset($enhanced['analysis_metadata']) ? $enhanced['analysis_metadata'] : [];
             if ($groundingScore !== null || !empty($enhanced['grounding_safe_summary'])): ?>
             <div class="overview-item" style="border-left:3px solid <?= $groundingScore !== null && $groundingScore < 70 ? '#dc2626' : '#16a34a' ?>;padding-left:12px;margin-bottom:16px">
-                <div class="overview-item-label">AI Grounding (v3)</div>
+                <div class="overview-item-label">AI Grounding (v4)</div>
                 <?php if ($groundingScore !== null): ?>
                 <p><strong>Grounding score:</strong> <?= (int) $groundingScore ?>/100
                 <?php if (!empty($meta['evidence_strength'])): ?> · Evidence: <?= e($meta['evidence_strength']) ?><?php endif; ?>
@@ -120,6 +179,34 @@ $breadcrumbs = [
                 <?php endif; ?>
                 <?php if (!empty($grounding['unsupported_claims'])): ?>
                 <p style="font-size:0.82rem;color:var(--gray-600)"><strong>Flagged claims:</strong> <?= count($grounding['unsupported_claims']) ?> — see raw JSON or re-check transcript.</p>
+                <?php endif; ?>
+            </div>
+            <?php endif;
+            $topicAdherence = isset($enhanced['topic_adherence_score']) ? $enhanced['topic_adherence_score'] : null;
+            $infoComplete = isset($enhanced['information_completeness_score']) ? $enhanced['information_completeness_score'] : null;
+            $offTopic = isset($meta['off_topic_content_flag']) ? $meta['off_topic_content_flag'] : '';
+            $mustHaveCheck = !empty($enhanced['must_have_check']) && is_array($enhanced['must_have_check']) ? $enhanced['must_have_check'] : [];
+            if ($topicAdherence !== null || $infoComplete !== null || $mustHaveCheck !== []): ?>
+            <div class="overview-item" style="margin-bottom:16px;padding:12px;background:var(--gray-50, #f8fafc);border-radius:8px">
+                <div class="overview-item-label">Interview coverage</div>
+                <?php if ($topicAdherence !== null): ?>
+                <p><strong>Topic adherence:</strong> <?= (int) $topicAdherence ?>/100</p>
+                <?php endif; ?>
+                <?php if ($infoComplete !== null): ?>
+                <p><strong>Planned questions covered:</strong> <?= (int) $infoComplete ?>%</p>
+                <?php endif; ?>
+                <?php if ($offTopic !== '' && stripos($offTopic, 'none') === false): ?>
+                <p><strong>Off-topic content:</strong> <?= e($offTopic) ?></p>
+                <?php endif; ?>
+                <?php if (!empty($mustHaveCheck)): ?>
+                <p style="margin-top:8px"><strong>Must-have checklist</strong></p>
+                <ul style="font-size:0.85rem;margin:4px 0 0 18px">
+                    <?php foreach ($mustHaveCheck as $mh): ?>
+                    <li><?= e($mh['requirement'] ?? '') ?> — <strong><?= e($mh['status'] ?? 'unclear') ?></strong>
+                        <?php if (!empty($mh['evidence'])): ?><br><span style="color:var(--text-muted)"><?= e($mh['evidence']) ?></span><?php endif; ?>
+                    </li>
+                    <?php endforeach; ?>
+                </ul>
                 <?php endif; ?>
             </div>
             <?php endif;
@@ -281,7 +368,9 @@ $breadcrumbs = [
         <!-- Right tabs -->
         <div class="right-tabs">
             <button type="button" class="right-tab active" data-rtab2="info">Information</button>
+            <?php if (!$isSharedReport): ?>
             <button type="button" class="right-tab" data-rtab2="chat">Team Chat</button>
+            <?php endif; ?>
             <button type="button" class="right-tab" data-rtab2="morgan" style="display:none">Ask Morgan</button>
         </div>
 
@@ -289,12 +378,12 @@ $breadcrumbs = [
         <div class="right-panel-body rtab2-panel active" id="rtab2-info">
             <dl class="info-dl">
                 <dt>Job Title</dt>
-                <dd><?= e($report['job_title']) ?> <a href="<?= url('jobs/' . $report['job_id'] . '/interviews') ?>" style="font-size:0.75rem" title="Open job">↗</a></dd>
+                <dd><?= e($report['job_title']) ?><?php if (!$isSharedReport): ?> <a href="<?= url('jobs/' . $report['job_id'] . '/interviews') ?>" style="font-size:0.75rem" title="Open job">↗</a><?php endif; ?></dd>
                 <dt>Department</dt><dd><?= e($report['department_name'] ?: '–') ?></dd>
                 <dt>Hiring Panel</dt><dd><?= e($hiringManager ?: '–') ?></dd>
                 <dt>Contact No.</dt><dd><?= e(trim(($report['phone_country_code'] ?? '') . ' ' . ($report['phone'] ?? ''))) ?: '–' ?></dd>
                 <dt>Email ID</dt><dd><?= e($report['email']) ?></dd>
-                <?php if (!empty($report['resume_path'])): ?>
+                <?php if (!$isSharedReport && !empty($report['resume_path'])): ?>
                 <dt>Resume</dt><dd>
                     <a href="<?= resume_url($report['application_id']) ?>">Download</a>
                     <?php if (strtolower(pathinfo($report['resume_path'], PATHINFO_EXTENSION)) === 'pdf'): ?>
@@ -303,7 +392,7 @@ $breadcrumbs = [
                 </dd>
                 <?php endif; ?>
             </dl>
-            <?php if (config('app')['show_manual_video_upload']): ?>
+            <?php if (!$isSharedReport && config('app')['show_manual_video_upload']): ?>
             <div class="upload-form-box">
                 <form method="POST" action="<?= url('interviews/' . $report['interview_id'] . '/upload') ?>" enctype="multipart/form-data">
                     <?= csrf_field() ?>
@@ -316,6 +405,7 @@ $breadcrumbs = [
             <?php endif; ?>
         </div>
 
+        <?php if (!$isSharedReport): ?>
         <!-- Team Chat -->
         <div class="right-panel-body rtab2-panel" id="rtab2-chat" style="display:none">
             <div class="chat-messages-box">
@@ -337,6 +427,7 @@ $breadcrumbs = [
                 </button>
             </form>
         </div>
+        <?php endif; ?>
     </div>
 </div>
 

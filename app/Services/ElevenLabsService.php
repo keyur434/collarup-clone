@@ -154,7 +154,7 @@ class ElevenLabsService
             foreach ($data['words'] as $word) {
                 $speaker = isset($word['speaker_id']) ? $word['speaker_id'] : (isset($word['speaker']) ? $word['speaker'] : 'speaker_0');
                 $text = isset($word['text']) ? $word['text'] : '';
-                $label = $this->mapSpeakerLabel($speaker);
+                $label = $this->mapSpeakerLabel($speaker, $word);
 
                 if ($currentSpeaker !== null && $label !== $currentSpeaker) {
                     $segmentText = trim($currentText);
@@ -209,27 +209,40 @@ class ElevenLabsService
         ];
     }
 
-    private function mapSpeakerLabel($speaker)
+    private function mapSpeakerLabel($speaker, array $word = [])
     {
+        if (!empty($word['speaker_role'])) {
+            $role = strtolower(trim((string) $word['speaker_role']));
+            if (in_array($role, ['interviewer', 'agent', 'host', 'recruiter'], true)) {
+                return 'Interviewer';
+            }
+            if (in_array($role, ['candidate', 'customer', 'user', 'guest', 'applicant'], true)) {
+                return 'Candidate';
+            }
+        }
+
         $speaker = strtolower(trim((string) $speaker));
-        $map = [
+        $roleMap = [
             'agent' => 'Interviewer',
             'customer' => 'Candidate',
-            'speaker_0' => 'Interviewer',
-            'speaker_1' => 'Candidate',
-            'speaker0' => 'Interviewer',
-            'speaker1' => 'Candidate',
+            'interviewer' => 'Interviewer',
+            'candidate' => 'Candidate',
+            'host' => 'Interviewer',
+            'guest' => 'Candidate',
         ];
-        if (isset($map[$speaker])) {
-            return $map[$speaker];
+        if (isset($roleMap[$speaker])) {
+            return $roleMap[$speaker];
         }
-        if (strpos($speaker, 'agent') !== false) {
+        if (strpos($speaker, 'agent') !== false || strpos($speaker, 'interviewer') !== false) {
             return 'Interviewer';
         }
-        if (strpos($speaker, 'customer') !== false) {
+        if (strpos($speaker, 'customer') !== false || strpos($speaker, 'candidate') !== false) {
             return 'Candidate';
         }
-        return ucfirst($speaker);
+        if (preg_match('/^speaker[_-]?(\d+)$/', $speaker, $m)) {
+            return 'speaker_' . $m[1];
+        }
+        return $speaker;
     }
 
     private function mockTranscript()

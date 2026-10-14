@@ -58,20 +58,23 @@ class PermissionService
 
 
 
+    public static function isJobCreator($jobId)
+    {
+        $userId = auth_id();
+        if (!$userId) {
+            return false;
+        }
+        $row = db()->fetch('SELECT created_by FROM jobs WHERE id = ?', [$jobId]);
+        return $row && (int) $row['created_by'] === (int) $userId;
+    }
+
+    /** Edit job role, pipeline, templates, status (members: creator only). */
     public static function canManageJob($jobId)
     {
         if (self::isAdminRole()) {
             return true;
         }
-        $userId = auth_id();
-        if (!$userId) {
-            return false;
-        }
-        $row = db()->fetch(
-            'SELECT TOP 1 1 as ok FROM job_hiring_managers WHERE job_id = ? AND user_id = ?',
-            [$jobId, $userId]
-        );
-        return !empty($row);
+        return self::isJobCreator($jobId);
     }
 
     public static function requireManageJob($jobId)
@@ -82,70 +85,84 @@ class PermissionService
         }
     }
 
+    /** View job, interviews, reports (all active portal members). */
     public static function canAccessJob($jobId)
-
     {
-
         if (self::isAdminRole()) {
-
             return true;
+        }
+        return auth_id() > 0;
+    }
 
+    /** View a specific interview report (portal access, job stakeholder, or magic-link session). */
+    public static function canViewReport($jobId, $reportId)
+    {
+        if (self::isAdminRole()) {
+            return true;
+        }
+        if (auth_id() > 0 && self::canAccessJob($jobId)) {
+            return true;
+        }
+        if (ReportShareService::sessionCanViewReport($reportId)) {
+            return true;
         }
 
-        $userId = auth_id();
+        return false;
+    }
 
-        if (!$userId) {
+    public static function requireReportAccess($jobId, $reportId)
+    {
+        if (!self::canViewReport($jobId, $reportId)) {
+            http_response_code(403);
+            die('Access denied.');
+        }
+    }
 
-            return false;
-
+    /** Recording playback for portal users or recipients with an active report share grant. */
+    public static function canViewInterviewMedia($interviewId)
+    {
+        if (self::isAdminRole()) {
+            return true;
         }
 
         $row = db()->fetch(
-
-            'SELECT TOP 1 1 as ok FROM job_hiring_managers WHERE job_id = ? AND user_id = ?
-
-             UNION
-
-             SELECT TOP 1 1 as ok FROM job_interviewers WHERE job_id = ? AND user_id = ?',
-
-            [$jobId, $userId, $jobId, $userId]
-
+            'SELECT a.job_id, ir.id AS report_id
+             FROM interviews i
+             JOIN applications a ON a.id = i.application_id
+             LEFT JOIN interview_reports ir ON ir.interview_id = i.id
+             WHERE i.id = ?',
+            [$interviewId]
         );
+        if (!$row) {
+            return false;
+        }
+        if (auth_id() > 0 && self::canAccessJob($row['job_id'])) {
+            return true;
+        }
+        if (!empty($row['report_id']) && ReportShareService::sessionCanViewReport($row['report_id'])) {
+            return true;
+        }
 
-        return !empty($row);
+        return false;
+    }
 
+    public static function requireInterviewMediaAccess($interviewId)
+    {
+        if (!self::canViewInterviewMedia($interviewId)) {
+            http_response_code(403);
+            die('Access denied.');
+        }
     }
 
 
 
+    /** Edit interview report content (members: job creator only). */
     public static function canEditReport($jobId)
-
     {
-
         if (self::isAdminRole()) {
-
             return true;
-
         }
-
-        $userId = auth_id();
-
-        if (!$userId) {
-
-            return false;
-
-        }
-
-        $row = db()->fetch(
-
-            'SELECT TOP 1 1 as ok FROM job_hiring_managers WHERE job_id = ? AND user_id = ?',
-
-            [$jobId, $userId]
-
-        );
-
-        return !empty($row);
-
+        return self::isJobCreator($jobId);
     }
 
 
@@ -195,6 +212,17 @@ class PermissionService
 
     }
 
+    /** @return array{0:string,1:array} Optional list filters (scope=mine), not access control. */
+    public static function jobListAccessClause($jobAlias = 'j')
+    {
+        return ['', []];
+    }
+
+    /** @return array{0:string,1:array} */
+    public static function applicationListAccessClause($jobAlias = 'j')
+    {
+        return ['', []];
+    }
 }
 
 

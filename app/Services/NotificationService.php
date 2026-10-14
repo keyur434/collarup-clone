@@ -3,49 +3,43 @@
 class NotificationService
 {
     private $mail;
+    private $delivery;
+    /** @var string|null live|test|log — one-shot override (CLI tests) */
+    private $modeOverride;
 
     public function __construct()
     {
         $this->mail = new MailService();
+        $this->delivery = new MailDeliveryService();
     }
 
-    public function notifyReportReady($interviewId)
+    public function withDeliveryMode($mode)
     {
-        if (!AppSettingsService::getBool('notify_report_ready', true)) {
+        $mode = strtolower(trim((string) $mode));
+        if (in_array($mode, ['live', 'test', 'log'], true)) {
+            $this->modeOverride = $mode;
+        }
+
+        return $this;
+    }
+
+    public function notifyReportReady($interviewId, $force = false)
+    {
+        if (!$force && !AppSettingsService::getBool('notify_report_ready', true)) {
             return;
         }
 
-        $row = db()->fetch(
-            'SELECT ir.id as report_id, ir.overall_score, ir.score_label,
-                    c.first_name, c.last_name, c.email,
-                    j.id as job_id, j.title as job_title,
-                    u.email as manager_email, u.first_name as manager_first
-             FROM interviews i
-             JOIN applications a ON a.id = i.application_id
-             JOIN candidates c ON c.id = a.candidate_id
-             JOIN jobs j ON j.id = a.job_id
-             JOIN interview_reports ir ON ir.interview_id = i.id
-             LEFT JOIN job_hiring_managers jhm ON jhm.job_id = j.id
-             LEFT JOIN users u ON u.id = jhm.user_id
-             WHERE i.id = ?',
-            [$interviewId]
-        );
-        if (!$row) {
+        $builder = new ReportReadyEmailService();
+        $emailCtx = $builder->buildContext($interviewId);
+        if (!$emailCtx) {
             return;
         }
 
-        $reportUrl = url('jobs/' . $row['job_id'] . '/reports/' . $row['report_id']);
-        $subject = 'Interview report ready — ' . $row['first_name'] . ' ' . $row['last_name'] . ' (' . $row['job_title'] . ')';
-        $body = $this->wrapHtml(
-            '<p>AI analysis is complete for <strong>' . e($row['first_name'] . ' ' . $row['last_name']) . '</strong>.</p>'
-            . '<p>Score: <strong>' . e($row['overall_score']) . '</strong> (' . e($row['score_label']) . ')</p>'
-            . '<p><a href="' . e($reportUrl) . '">View report</a></p>'
-        );
-
-        $recipients = $this->jobNotificationRecipients($row['job_id'], $row['manager_email']);
-        foreach ($recipients as $email) {
-            $this->send('report_ready', $email, $subject, $body, ['interview_id' => $interviewId]);
-        }
+        $html = $builder->renderHtml($emailCtx['template_data']);
+        $this->sendWithRecipients('report_ready', $emailCtx['to'], $emailCtx['cc'], $emailCtx['subject'], $html, [
+            'interview_id' => $interviewId,
+            'report_id' => $emailCtx['report_id'],
+        ]);
     }
 
     public function notifyInterviewScheduled($interviewId, $explicitSend = null)
@@ -167,39 +161,77 @@ class NotificationService
         return str_replace(array_keys($map), array_values($map), $text);
     }
 
-    private function jobNotificationRecipients($jobId, $managerEmail)
+    private function sendWithRecipients($type, array $to, array $cc, $subject, $htmlBody, $meta = [])
     {
-        $emails = [];
-        if ($managerEmail) {
-            $emails[] = $managerEmail;
-        }
-        $managers = db()->fetchAll(
-            'SELECT u.email FROM job_hiring_managers jhm JOIN users u ON u.id = jhm.user_id WHERE jhm.job_id = ? AND u.is_active = 1',
-            [$jobId]
-        );
-        foreach ($managers as $m) {
-            if (!empty($m['email'])) {
-                $emails[] = $m['email'];
+        $delivery = $this->deliveryForSend();
+        $prepared = $delivery->prepareRecipients($to, $cc, $subject, $htmlBody, $meta);
+        $to = $prepared['to'];
+        $cc = $prepared['cc'];
+        $subject = $prepared['subject'];
+        $htmlBody = $prepared['body'];
+        $meta = $prepared['meta'];
+
+        $status = 'skipped';
+        $error = isset($prepared['meta']['error']) ? $prepared['meta']['error'] : null;
+
+        if ($prepared['status_hint'] === 'dry_run') {
+            $status = 'dry_run';
+        } else {
+            try {
+                if ($this->mail->isConfigured()) {
+                    $primaryTo = count($to) === 1 ? $to[0] : $to;
+                    $this->mail->send($primaryTo, $subject, $htmlBody, '', $cc);
+                    $status = $prepared['status_hint'] === 'sent_test' ? 'sent_test' : 'sent';
+                } else {
+                    $status = 'skipped';
+                    $error = 'SMTP not configured';
+                }
+            } catch (Exception $e) {
+                $status = 'failed';
+                $error = $e->getMessage();
             }
         }
-        return array_values(array_unique($emails));
+
+        try {
+            db()->insert('notification_log', [
+                'notification_type' => $type,
+                'recipient' => $prepared['to_display'],
+                'subject' => $subject,
+                'status' => $status,
+                'error_message' => $error,
+                'meta_json' => json_encode($meta),
+            ]);
+        } catch (Exception $e) {
+        }
     }
 
     private function send($type, $to, $subject, $htmlBody, $meta = [])
     {
+        $delivery = $this->deliveryForSend();
+        $prepared = $delivery->prepare($to, $subject, $htmlBody, $meta);
+        $to = $prepared['to'];
+        $subject = $prepared['subject'];
+        $htmlBody = $prepared['body'];
+        $meta = $prepared['meta'];
+
         $status = 'skipped';
-        $error = null;
-        try {
-            if ($this->mail->isConfigured()) {
-                $this->mail->send($to, $subject, $htmlBody);
-                $status = 'sent';
-            } else {
-                $status = 'skipped';
-                $error = 'SMTP not configured';
+        $error = isset($prepared['meta']['error']) ? $prepared['meta']['error'] : null;
+
+        if ($prepared['status_hint'] === 'dry_run') {
+            $status = 'dry_run';
+        } else {
+            try {
+                if ($this->mail->isConfigured()) {
+                    $this->mail->send($to, $subject, $htmlBody);
+                    $status = $prepared['status_hint'] === 'sent_test' ? 'sent_test' : 'sent';
+                } else {
+                    $status = 'skipped';
+                    $error = 'SMTP not configured';
+                }
+            } catch (Exception $e) {
+                $status = 'failed';
+                $error = $e->getMessage();
             }
-        } catch (Exception $e) {
-            $status = 'failed';
-            $error = $e->getMessage();
         }
 
         try {
@@ -214,6 +246,15 @@ class NotificationService
         } catch (Exception $e) {
             // logging must not break pipeline
         }
+    }
+
+    private function deliveryForSend()
+    {
+        if ($this->modeOverride === null) {
+            return $this->delivery;
+        }
+
+        return new MailDeliveryService($this->modeOverride);
     }
 
     private function wrapHtml($inner)

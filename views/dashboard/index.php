@@ -1,7 +1,8 @@
 <?php
-// Set breadcrumb for topbar
-$pageBack = null;
-$breadcrumbs = [['label' => 'Welcome back, ' . auth_user()['first_name']]];
+$breadcrumbs = [
+    ['label' => 'Dashboard', 'url' => url('dashboard')],
+    ['label' => 'Overview'],
+];
 ?>
 
 <!-- Candidate Statistics -->
@@ -55,13 +56,19 @@ $breadcrumbs = [['label' => 'Welcome back, ' . auth_user()['first_name']]];
                     <span><span class="dot dot-pink"></span> Rejected Candidates</span>
                 </div>
             </div>
-            <select class="filter-select" style="font-size:0.8rem">
-                <option>Month</option>
-                <option>Week</option>
-                <option>Year</option>
+            <select class="filter-select" style="font-size:0.8rem" id="successRatePeriod" aria-label="Success rate period"
+                onchange="var u=new URL(window.location.href);u.searchParams.set('success_period',this.value);window.location.href=u.toString();">
+                <option value="month" <?= ($successPeriod ?? 'month') === 'month' ? 'selected' : '' ?>>Month</option>
+                <option value="week" <?= ($successPeriod ?? '') === 'week' ? 'selected' : '' ?>>Week</option>
+                <option value="year" <?= ($successPeriod ?? '') === 'year' ? 'selected' : '' ?>>Year</option>
             </select>
         </div>
-        <!-- Inline SVG mini chart -->
+        <?php
+        $srPoints = $successRate['points'] ?? [];
+        $srPaths = $successRate['paths'] ?? ['passed_line' => '', 'passed_area' => '', 'rejected_line' => ''];
+        $srN = max(count($srPoints), 1);
+        $srStep = $srN > 1 ? 600 / ($srN - 1) : 0;
+        ?>
         <div style="position:relative;height:130px;overflow:hidden">
             <svg viewBox="0 0 600 130" preserveAspectRatio="none" style="width:100%;height:100%">
                 <defs>
@@ -70,18 +77,21 @@ $breadcrumbs = [['label' => 'Welcome back, ' . auth_user()['first_name']]];
                         <stop offset="100%" stop-color="#7c3aed" stop-opacity="0.02"/>
                     </linearGradient>
                 </defs>
-                <path d="M0 110 C60 100 100 40 200 30 S400 90 600 115 L600 130 L0 130 Z" fill="url(#gradPurple)"/>
-                <path d="M0 110 C60 100 100 40 200 30 S400 90 600 115" fill="none" stroke="#7c3aed" stroke-width="2"/>
-                <!-- X axis labels -->
-                <text class="chart-axis-label" x="0" y="128" font-size="9">01</text>
-                <text class="chart-axis-label" x="75" y="128" font-size="9">02</text>
-                <text class="chart-axis-label" x="150" y="128" font-size="9">03</text>
-                <text class="chart-axis-label" x="225" y="128" font-size="9">04</text>
-                <text class="chart-axis-label" x="300" y="128" font-size="9">05</text>
-                <text class="chart-axis-label" x="375" y="128" font-size="9">06</text>
-                <text class="chart-axis-label" x="450" y="128" font-size="9">07</text>
+                <?php if (!empty($srPaths['passed_area'])): ?>
+                <path d="<?= e($srPaths['passed_area']) ?>" fill="url(#gradPurple)"/>
+                <?php endif; ?>
+                <?php if (!empty($srPaths['passed_line'])): ?>
+                <path d="<?= e($srPaths['passed_line']) ?>" fill="none" stroke="#7c3aed" stroke-width="2"/>
+                <?php endif; ?>
+                <?php if (!empty($srPaths['rejected_line'])): ?>
+                <path d="<?= e($srPaths['rejected_line']) ?>" fill="none" stroke="#f472b6" stroke-width="2" stroke-dasharray="4 3"/>
+                <?php endif; ?>
+                <?php foreach ($srPoints as $idx => $pt): ?>
+                <text class="chart-axis-label" x="<?= (int) round($srN > 1 ? $idx * $srStep : 300) ?>" y="128" font-size="9" text-anchor="middle"><?= e($pt['label']) ?></text>
+                <?php endforeach; ?>
             </svg>
         </div>
+        <p class="hint" style="margin-top:6px;font-size:0.75rem">Passed = advance/offer; rejected = reject decisions by period (from application updates).</p>
     </div>
 
     <!-- Interview Status donut -->
@@ -190,7 +200,7 @@ $breadcrumbs = [['label' => 'Welcome back, ' . auth_user()['first_name']]];
                 <div class="iv-card-time">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
                     <?= $iv['scheduled_date'] ? format_date($iv['scheduled_date']) : '–' ?>
-                    <?= $iv['scheduled_start'] ? ' · ' . format_time($iv['scheduled_start']) . '–' . format_time($iv['scheduled_end']) : '' ?>
+                    <?= format_interview_time_range($iv['scheduled_start'] ?? null, $iv['scheduled_end'] ?? null) ?>
                 </div>
             </div>
             <?php endforeach; endif; ?>
@@ -216,7 +226,7 @@ $breadcrumbs = [['label' => 'Welcome back, ' . auth_user()['first_name']]];
                 <div class="iv-card-time">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
                     <?= $iv['scheduled_date'] ? format_date($iv['scheduled_date']) : '–' ?>
-                    <?= $iv['scheduled_start'] ? ' · ' . format_time($iv['scheduled_start']) . '–' . format_time($iv['scheduled_end']) : '' ?>
+                    <?= format_interview_time_range($iv['scheduled_start'] ?? null, $iv['scheduled_end'] ?? null) ?>
                 </div>
             </div>
             <?php endforeach; endif; ?>

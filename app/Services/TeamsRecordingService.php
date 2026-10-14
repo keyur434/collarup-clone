@@ -100,15 +100,18 @@ class TeamsRecordingService
             throw new RuntimeException('Teams did not return a meeting link. Check OnlineMeetings.ReadWrite.All on the sync app.');
         }
 
-        $fetchAfter = clone $end;
-        $fetchAfter->modify('+10 minutes');
+        $fetchAfterStr = $this->computeRecordingFetchAfter(
+            $row['scheduled_date'],
+            $row['scheduled_start'],
+            $row['scheduled_end']
+        );
 
         db()->update('interviews', [
             'meeting_url' => $meeting['joinWebUrl'],
             'teams_meeting_id' => $meeting['id'],
             'teams_organizer_user_id' => $userId,
             'recording_fetch_state' => 'waiting',
-            'recording_fetch_after' => $fetchAfter->format('Y-m-d H:i:s'),
+            'recording_fetch_after' => $fetchAfterStr,
             'recording_fetch_attempts' => 0,
         ], 'id = :id', ['id' => $interviewId]);
 
@@ -238,14 +241,50 @@ class TeamsRecordingService
 
     public function deferRecordingFetch($interviewId, $minutes = 30, $maxAttempts = 72)
     {
-        $row = db()->fetch('SELECT recording_fetch_attempts FROM interviews WHERE id = ?', [$interviewId]);
+        $row = db()->fetch(
+            'SELECT recording_fetch_attempts, scheduled_date, scheduled_start, scheduled_end FROM interviews WHERE id = ?',
+            [$interviewId]
+        );
         $attempts = $row ? (int) $row['recording_fetch_attempts'] + 1 : 1;
         $state = $attempts >= $maxAttempts ? 'failed' : 'waiting';
+
+        if ($row && !empty($row['scheduled_date'])) {
+            $firstDue = $this->computeRecordingFetchAfter(
+                $row['scheduled_date'],
+                $row['scheduled_start'],
+                $row['scheduled_end']
+            );
+            $tz = new DateTimeZone(config('app')['timezone']);
+            try {
+                $dueAt = new DateTime($firstDue, $tz);
+                if ($dueAt < new DateTime('now', $tz)) {
+                    $minutes = min($minutes, 5);
+                }
+            } catch (Exception $e) {
+            }
+        }
+
+        $after = (new DateTime('now', new DateTimeZone(config('app')['timezone'])))
+            ->modify('+' . (int) $minutes . ' minutes')
+            ->format('Y-m-d H:i:s');
+
         db()->update('interviews', [
             'recording_fetch_attempts' => $attempts,
             'recording_fetch_state' => $state,
-            'recording_fetch_after' => date('Y-m-d H:i:s', time() + ($minutes * 60)),
+            'recording_fetch_after' => $after,
         ], 'id = :id', ['id' => $interviewId]);
+
+        return $after;
+    }
+
+    public function deferRecordingFetchRescheduleUtc($interviewId, $minutes = 30, $maxAttempts = 72)
+    {
+        $afterLocal = $this->deferRecordingFetch($interviewId, $minutes, $maxAttempts);
+        $tz = new DateTimeZone(config('app')['timezone']);
+        $utc = new DateTimeZone('UTC');
+        $dt = new DateTime($afterLocal, $tz);
+        $dt->setTimezone($utc);
+        return $dt->format('Y-m-d H:i:s');
     }
 
     public function markRecordingFetchQueued($interviewId)
@@ -264,6 +303,8 @@ class TeamsRecordingService
             return 0;
         }
 
+        $this->releaseStuckRecordingFetches(25);
+
         $limit = max(1, min(50, (int) $limit));
         $now = $this->appNowString();
         $rows = db()->fetchAll(
@@ -278,7 +319,14 @@ class TeamsRecordingService
                )
                AND i.recording_fetch_state IN ('waiting', 'retry')
                AND (i.recording_fetch_after IS NULL OR i.recording_fetch_after <= ?)
-               AND i.status IN ('scheduled', 'processing', 'ongoing', 'incomplete')
+               AND (
+                   i.status IN ('scheduled', 'processing', 'ongoing', 'incomplete', 'completed')
+                   OR (
+                       i.status = 'pending'
+                       AND i.scheduled_date IS NOT NULL
+                       AND i.meeting_url IS NOT NULL AND LTRIM(RTRIM(i.meeting_url)) <> ''
+                   )
+               )
                AND NOT EXISTS (
                    SELECT 1 FROM interview_media im
                    WHERE im.interview_id = i.id
@@ -289,6 +337,37 @@ class TeamsRecordingService
         );
 
         return $this->queueRecordingFetchRows($rows);
+    }
+
+    /**
+     * Interviews with Teams link + slot should be schedulable for recording poll even if status stayed pending.
+     */
+    public function promoteToScheduledForRecording($interviewId)
+    {
+        db()->query(
+            "UPDATE interviews SET status = 'scheduled', updated_at = SYSUTCDATETIME()
+             WHERE id = ?
+               AND status = 'pending'
+               AND scheduled_date IS NOT NULL
+               AND meeting_url IS NOT NULL AND LTRIM(RTRIM(meeting_url)) <> ''",
+            [$interviewId]
+        );
+    }
+
+    /**
+     * Unstick interviews left in fetching (worker crash) so poll can retry.
+     */
+    public function releaseStuckRecordingFetches($minutesStuck = 25)
+    {
+        $minutesStuck = max(5, (int) $minutesStuck);
+        $cutoff = $this->appNowString();
+        db()->query(
+            "UPDATE interviews SET recording_fetch_state = 'waiting',
+                    recording_fetch_after = ?
+             WHERE recording_fetch_state = 'fetching'
+               AND updated_at < DATEADD(minute, -{$minutesStuck}, SYSUTCDATETIME())",
+            [$cutoff]
+        );
     }
 
     /**
@@ -314,7 +393,14 @@ class TeamsRecordingService
                )
                AND i.recording_fetch_state IN ('waiting', 'retry')
                AND (i.recording_fetch_after IS NULL OR i.recording_fetch_after <= ?)
-               AND i.status IN ('scheduled', 'processing', 'ongoing', 'incomplete')
+               AND (
+                   i.status IN ('scheduled', 'processing', 'ongoing', 'incomplete', 'completed')
+                   OR (
+                       i.status = 'pending'
+                       AND i.scheduled_date IS NOT NULL
+                       AND i.meeting_url IS NOT NULL AND LTRIM(RTRIM(i.meeting_url)) <> ''
+                   )
+               )
                AND NOT EXISTS (
                    SELECT 1 FROM interview_media im
                    WHERE im.interview_id = i.id
@@ -347,6 +433,7 @@ class TeamsRecordingService
         $queue = new QueueService();
         $queued = 0;
         foreach ($rows as $row) {
+            $this->promoteToScheduledForRecording($row['id']);
             $queue->push('FetchTeamsRecording', ['interview_id' => $row['id']]);
             $this->markRecordingFetchQueued($row['id']);
             $queued++;
@@ -360,18 +447,63 @@ class TeamsRecordingService
         return (new DateTime('now', $tz))->format('Y-m-d H:i:s');
     }
 
-    public function ensureRecordingPolling($interviewId, $scheduledDate, $scheduledEnd)
+    public function ensureRecordingPolling($interviewId, $scheduledDate, $scheduledEnd, $scheduledStart = null)
     {
         if (empty($scheduledDate)) {
             return;
         }
-        $end = $this->buildDateTime($scheduledDate, $scheduledEnd, null);
-        $fetchAfter = clone $end;
-        $fetchAfter->modify('+10 minutes');
+        $fetchAfterStr = $this->computeRecordingFetchAfter($scheduledDate, $scheduledStart, $scheduledEnd);
         db()->update('interviews', [
             'recording_fetch_state' => 'waiting',
-            'recording_fetch_after' => $fetchAfter->format('Y-m-d H:i:s'),
+            'recording_fetch_after' => $fetchAfterStr,
         ], 'id = :id', ['id' => $interviewId]);
+        $this->promoteToScheduledForRecording($interviewId);
+    }
+
+    /**
+     * First poll time: earlier of (slot end + buffer) or (start + 30 min), not before start + 15 min.
+     * Retries handle Teams delay even if the call ended before calendar end.
+     */
+    public function computeRecordingFetchAfter($scheduledDate, $scheduledStart, $scheduledEnd)
+    {
+        $start = $this->buildDateTime($scheduledDate, $scheduledStart, '09:00:00');
+        $end = $this->buildDateTime($scheduledDate, $scheduledEnd, null);
+        if ($end <= $start) {
+            $end = clone $start;
+            $end->modify('+45 minutes');
+        }
+        $buffer = max(2, (int) config('app')['teams_recording_fetch_buffer_minutes']);
+
+        $afterEnd = clone $end;
+        $afterEnd->modify('+' . $buffer . ' minutes');
+
+        $early = clone $start;
+        $early->modify('+30 minutes');
+        $minWait = clone $start;
+        $minWait->modify('+15 minutes');
+        if ($early < $minWait) {
+            $early = $minWait;
+        }
+
+        $fetchAt = ($early < $afterEnd) ? $early : $afterEnd;
+        return $fetchAt->format('Y-m-d H:i:s');
+    }
+
+    public function forceQueueRecordingFetch($interviewId)
+    {
+        if (!$this->graphReady()) {
+            throw new RuntimeException('Microsoft Graph sync app is not configured.');
+        }
+        $this->promoteToScheduledForRecording($interviewId);
+        $this->resetStuckRecordingFetch($interviewId);
+        db()->update('interviews', [
+            'recording_fetch_state' => 'waiting',
+            'recording_fetch_after' => $this->appNowString(),
+        ], 'id = :id', ['id' => $interviewId]);
+        if ($this->queueRecordingFetchIfDue($interviewId)) {
+            return true;
+        }
+        return $this->queueRecordingFetchRows([['id' => $interviewId]]) > 0;
     }
 
     public function registerManualTeamsLink($interviewId, $joinUrl, $scheduledDate, $scheduledEnd, $organizerEmail = null)
@@ -408,7 +540,13 @@ class TeamsRecordingService
             $update['teams_meeting_id'] = $teamsMeetingId;
         }
         db()->update('interviews', $update, 'id = :id', ['id' => $interviewId]);
-        $this->ensureRecordingPolling($interviewId, $scheduledDate, $scheduledEnd);
+        $startRow = db()->fetch('SELECT scheduled_start FROM interviews WHERE id = ?', [$interviewId]);
+        $this->ensureRecordingPolling(
+            $interviewId,
+            $scheduledDate,
+            $scheduledEnd,
+            $startRow ? $startRow['scheduled_start'] : null
+        );
     }
 
     private function buildDateTime($date, $time, $defaultTime)

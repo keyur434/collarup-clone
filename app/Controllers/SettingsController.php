@@ -12,6 +12,8 @@ class SettingsController
 
         'seniority' => ['table' => 'seniority_levels', 'label' => 'Designation Levels', 'field' => 'name', 'order' => 'sort_order'],
 
+        'job-titles' => ['table' => 'job_titles', 'label' => 'Job Titles', 'field' => 'name', 'order' => 'sort_order'],
+
         'skills' => ['table' => 'skill_tags', 'label' => 'Skill Pool', 'field' => 'name', 'order' => 'sort_order'],
 
         'work-modes' => ['table' => 'work_modes', 'label' => 'Work Modes', 'field' => 'name'],
@@ -100,7 +102,7 @@ class SettingsController
                 'notify_decision_email' => AppSettingsService::getBool('notify_decision_email', true),
                 'notify_interview_invite' => AppSettingsService::getBool('notify_interview_invite', true),
                 'company_name' => AppSettingsService::get('company_name', ''),
-                'company_about' => company_about_effective(),
+                'company_about' => company_about_for_display(AppSettingsService::get('company_about', '')),
                 'keka_last_sync_at' => AppSettingsService::get('keka_last_sync_at', ''),
             ];
             $data['keka_count'] = 0;
@@ -178,13 +180,13 @@ class SettingsController
 
         }
 
-        if ($type === 'seniority' || $type === 'experience' || $type === 'skills') {
+        if ($type === 'seniority' || $type === 'experience' || $type === 'skills' || $type === 'job-titles') {
 
             $row['sort_order'] = (int) ($_POST['sort_order'] ?? 99);
 
         }
 
-        if ($type === 'skills') {
+        if ($type === 'skills' || $type === 'job-titles') {
 
             $row['is_active'] = 1;
 
@@ -198,7 +200,7 @@ class SettingsController
 
         }
 
-        if (in_array($type, ['departments', 'work-modes', 'sources'], true)) {
+        if (in_array($type, ['departments', 'work-modes', 'sources', 'job-titles'], true)) {
 
             $row['is_active'] = 1;
 

@@ -15,8 +15,15 @@ class JobController
         } catch (Exception $e) {
         }
 
+        $jobTitles = [];
+        try {
+            $jobTitles = db()->fetchAll('SELECT * FROM job_titles WHERE is_active = 1 ORDER BY sort_order, name');
+        } catch (Exception $e) {
+        }
+
         return [
             'departments' => db()->fetchAll('SELECT * FROM departments WHERE is_active = 1 ORDER BY name'),
+            'job_titles' => $jobTitles,
             'seniority' => db()->fetchAll('SELECT * FROM seniority_levels ORDER BY sort_order'),
             'skills_pool' => $skillsPool,
             'company_about_default' => company_about_effective(),
@@ -38,13 +45,61 @@ class JobController
             }
         }
         if (!empty($post['key_skills'])) {
-            foreach (array_filter(array_map('trim', explode(',', $post['key_skills']))) as $s) {
+            foreach ($this->splitSkillText($post['key_skills']) as $s) {
                 if ($s !== '' && !in_array($s, $skills, true)) {
                     $skills[] = $s;
                 }
             }
         }
+        $skills = $this->expandOversizedSkills($skills);
+        if ($skills !== []) {
+            $skills = SkillTagService::ensureInPool($skills);
+        }
+
         return $skills;
+    }
+
+    private function splitSkillText($text)
+    {
+        $text = trim((string) $text);
+        if ($text === '') {
+            return [];
+        }
+        $parts = preg_split('/\s*,\s*/', $text);
+        if (count($parts) === 1 && mb_strlen($text) > 120) {
+            $parts = preg_split('/[\r\n;|•]+/', $text);
+        }
+        $out = [];
+        foreach ($parts as $p) {
+            $p = trim($p);
+            if ($p !== '') {
+                $out[] = $p;
+            }
+        }
+        return $out;
+    }
+
+    private function expandOversizedSkills(array $skills)
+    {
+        $out = [];
+        foreach ($skills as $s) {
+            $s = trim($s);
+            if ($s === '') {
+                continue;
+            }
+            if (mb_strlen($s) > 200) {
+                foreach ($this->splitSkillText($s) as $part) {
+                    if ($part !== '' && !in_array($part, $out, true)) {
+                        $out[] = $part;
+                    }
+                }
+                continue;
+            }
+            if (!in_array($s, $out, true)) {
+                $out[] = $s;
+            }
+        }
+        return $out;
     }
 
     private function enrichJobForForm($job)
@@ -57,6 +112,10 @@ class JobController
         $job['skills_selected'] = $decoded;
         $job['hiring_managers'] = db()->fetchAll('SELECT user_id FROM job_hiring_managers WHERE job_id = ?', [$job['id']]);
         $job['interviewers'] = db()->fetchAll('SELECT user_id FROM job_interviewers WHERE job_id = ?', [$job['id']]);
+        $job['hiring_team_selected'] = [];
+        foreach ($job['hiring_managers'] as $hm) {
+            $job['hiring_team_selected'][] = 'user:' . $hm['user_id'];
+        }
         try {
             $job['external_hm'] = db()->fetchAll(
                 "SELECT name, email FROM job_external_contacts WHERE job_id = ? AND contact_role = 'hiring_manager' ORDER BY id",
@@ -70,7 +129,120 @@ class JobController
             $job['external_hm'] = [];
             $job['external_iv'] = [];
         }
+        foreach ($job['external_hm'] as $ex) {
+            if (!empty($ex['email'])) {
+                $keka = db()->fetch('SELECT id FROM keka_employees WHERE LOWER(email) = LOWER(?)', [$ex['email']]);
+                if ($keka) {
+                    $job['hiring_team_selected'][] = 'keka:' . $keka['id'];
+                } else {
+                    $job['hiring_team_selected'][] = 'ext:' . $ex['email'];
+                }
+            } elseif (trim($ex['name'] ?? '') !== '') {
+                $job['hiring_team_selected'][] = 'extn:' . rawurlencode(trim($ex['name']));
+            }
+        }
+        $job['interviewer_team_selected'] = [];
+        foreach ($job['interviewers'] as $iv) {
+            $job['interviewer_team_selected'][] = 'user:' . $iv['user_id'];
+        }
+        foreach ($job['external_iv'] as $ex) {
+            if (!empty($ex['email'])) {
+                $keka = db()->fetch('SELECT id FROM keka_employees WHERE LOWER(email) = LOWER(?)', [$ex['email']]);
+                if ($keka) {
+                    $job['interviewer_team_selected'][] = 'keka:' . $keka['id'];
+                } else {
+                    $job['interviewer_team_selected'][] = 'ext:' . $ex['email'];
+                }
+            } elseif (trim($ex['name'] ?? '') !== '') {
+                $job['interviewer_team_selected'][] = 'extn:' . rawurlencode(trim($ex['name']));
+            }
+        }
+        // Externals are shown in the directory multiselect; keep manual rows empty unless adding new.
+        $job['external_iv'] = [];
         return $job;
+    }
+
+    private function titleFieldsFromPost(array $post)
+    {
+        $jobTitleId = !empty($post['job_title_id']) ? (int) $post['job_title_id'] : null;
+        $typedTitle = trim($post['title'] ?? '');
+        $title = $typedTitle;
+
+        if ($title === '' && $jobTitleId) {
+            try {
+                $row = db()->fetch('SELECT name FROM job_titles WHERE id = ? AND is_active = 1', [$jobTitleId]);
+                if ($row) {
+                    $title = trim($row['name']);
+                }
+            } catch (Exception $e) {
+            }
+        }
+
+        if ($title === '') {
+            $title = 'Untitled Role';
+        }
+
+        return [
+            'title' => $title,
+            // Free-form title wins; catalog id only when title came from the backup dropdown alone.
+            'job_title_id' => ($typedTitle === '' && $jobTitleId) ? $jobTitleId : null,
+        ];
+    }
+
+    /**
+     * Portal users (job_hiring_managers) + directory-only rows (job_external_contacts).
+     *
+     * @param array<int,string> $jobIds
+     * @return array<string, array<int, array{first_name:string,last_name:string,initials:?string}>>
+     */
+    private function hiringManagersForJobs(array $jobIds)
+    {
+        $byJob = [];
+        foreach ($jobIds as $id) {
+            $byJob[$id] = [];
+        }
+        if ($jobIds === []) {
+            return $byJob;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($jobIds), '?'));
+        $portal = db()->fetchAll(
+            "SELECT jhm.job_id, u.first_name, u.last_name, u.initials
+             FROM job_hiring_managers jhm
+             JOIN users u ON u.id = jhm.user_id
+             WHERE jhm.job_id IN ($placeholders)",
+            $jobIds
+        );
+        foreach ($portal as $row) {
+            $byJob[$row['job_id']][] = [
+                'first_name' => $row['first_name'],
+                'last_name' => $row['last_name'] ?? '',
+                'initials' => $row['initials'],
+            ];
+        }
+
+        try {
+            $external = db()->fetchAll(
+                "SELECT job_id, name, email FROM job_external_contacts
+                 WHERE contact_role = 'hiring_manager' AND job_id IN ($placeholders)",
+                $jobIds
+            );
+            foreach ($external as $row) {
+                $label = trim((string) ($row['name'] ?: $row['email'] ?: ''));
+                if ($label === '') {
+                    continue;
+                }
+                $parts = preg_split('/\s+/', $label, 2);
+                $byJob[$row['job_id']][] = [
+                    'first_name' => $parts[0],
+                    'last_name' => isset($parts[1]) ? $parts[1] : '',
+                    'initials' => null,
+                ];
+            }
+        } catch (Exception $e) {
+        }
+
+        return $byJob;
     }
 
     public function index()
@@ -91,27 +263,104 @@ class JobController
             $where .= " AND j.status = 'archived'";
         }
         if ($search) {
-            $where .= ' AND j.title LIKE ?';
-            $params[] = '%' . $search . '%';
+            $where .= ' AND (j.title LIKE ? OR ci.name LIKE ? OR st.name LIKE ?)';
+            $like = '%' . $search . '%';
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
         }
 
-        $total = db()->fetch("SELECT COUNT(*) as c FROM jobs j WHERE $where", $params)['c'];
+        $stateFilter = isset($_GET['state_id']) ? (int) $_GET['state_id'] : 0;
+        if ($stateFilter > 0) {
+            $where .= ' AND j.state_id = ?';
+            $params[] = $stateFilter;
+        }
+
+        $cityFilter = isset($_GET['city_id']) ? (int) $_GET['city_id'] : 0;
+        if ($cityFilter > 0) {
+            $where .= ' AND j.city_id = ?';
+            $params[] = $cityFilter;
+        }
+
+        list($accessSql, $accessParams) = PermissionService::jobListAccessClause('j');
+        $where .= $accessSql;
+        $params = array_merge($params, $accessParams);
+
+        $scope = isset($_GET['scope']) ? $_GET['scope'] : '';
+        if ($scope === 'mine') {
+            $where .= ' AND j.created_by = ?';
+            $params[] = auth_id();
+        }
+
+        if (!empty($_GET['created_by']) && PermissionService::isAdminRole()) {
+            $where .= ' AND j.created_by = ?';
+            $params[] = (int) $_GET['created_by'];
+        }
+
+        $order = isset($_GET['order']) ? $_GET['order'] : 'created_desc';
+        $orderSql = 'j.created_at DESC';
+        if ($order === 'title') {
+            $orderSql = 'j.title ASC';
+        } elseif ($order === 'creator') {
+            $orderSql = 'creator.last_name ASC, creator.first_name ASC, j.title ASC';
+        } elseif ($order === 'location') {
+            $orderSql = 'st.name ASC, ci.name ASC, j.title ASC';
+        }
+
+        $jobJoins = '
+             LEFT JOIN cities ci ON ci.id = j.city_id
+             LEFT JOIN states st ON st.id = j.state_id';
+
+        $total = db()->fetch("SELECT COUNT(*) as c FROM jobs j $jobJoins WHERE $where", $params)['c'];
         $jobs = db()->fetchAll(
             "SELECT j.*, d.name as department_name, s.name as seniority_name,
+                    ci.name as city_name, st.name as state_name,
+                    creator.first_name AS creator_first_name, creator.last_name AS creator_last_name,
                     (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) as applicants,
                     (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id AND a.status IN ('completed','scheduled')) as candidates,
                     (SELECT COUNT(*) FROM interviews i JOIN applications a ON a.id = i.application_id WHERE a.job_id = j.id AND i.status = 'completed') as interviews_done
              FROM jobs j
              LEFT JOIN departments d ON d.id = j.department_id
              LEFT JOIN seniority_levels s ON s.id = j.seniority_id
-             WHERE $where ORDER BY j.created_at DESC" . sql_page($perPage, $offset),
+             $jobJoins
+             LEFT JOIN users creator ON creator.id = j.created_by
+             WHERE $where ORDER BY $orderSql" . sql_page($perPage, $offset),
             $params
         );
 
+        $hmByJob = $this->hiringManagersForJobs(array_column($jobs, 'id'));
         foreach ($jobs as &$job) {
-            $job['managers'] = db()->fetchAll(
-                'SELECT u.initials, u.first_name, u.last_name FROM job_hiring_managers jhm JOIN users u ON u.id = jhm.user_id WHERE jhm.job_id = ?',
-                [$job['id']]
+            $job['hiring_managers'] = $hmByJob[$job['id']] ?? [];
+            $job['can_manage'] = PermissionService::canManageJob($job['id']);
+        }
+        unset($job);
+
+        $teamUsers = [];
+        if (PermissionService::isAdminRole()) {
+            $teamUsers = db()->fetchAll(
+                'SELECT id, first_name, last_name FROM users WHERE is_active = 1 ORDER BY first_name, last_name'
+            );
+        }
+
+        $locationStates = db()->fetchAll(
+            "SELECT DISTINCT st.id, st.name
+             FROM jobs j
+             INNER JOIN states st ON st.id = j.state_id
+             LEFT JOIN cities ci ON ci.id = j.city_id
+             WHERE $where
+             ORDER BY st.name",
+            $params
+        );
+        $locationCities = [];
+        if ($stateFilter > 0) {
+            $locationCities = db()->fetchAll(
+                "SELECT DISTINCT ci.id, ci.name
+                 FROM jobs j
+                 INNER JOIN cities ci ON ci.id = j.city_id
+                 LEFT JOIN states st ON st.id = j.state_id
+                 WHERE $where
+                 ORDER BY ci.name",
+                $params
             );
         }
 
@@ -120,6 +369,13 @@ class JobController
             'jobs' => $jobs,
             'status' => $status,
             'search' => $search,
+            'scope' => $scope,
+            'order' => $order,
+            'stateFilter' => $stateFilter,
+            'cityFilter' => $cityFilter,
+            'locationStates' => $locationStates,
+            'locationCities' => $locationCities,
+            'teamUsers' => $teamUsers,
             'perPage' => $perPage,
             'page' => $page,
             'total' => $total,
@@ -162,8 +418,7 @@ class JobController
         $jobId = !empty($_SESSION['wizard_job_id']) ? $_SESSION['wizard_job_id'] : uuid();
         $exists = db()->fetch('SELECT id FROM jobs WHERE id = ?', [$jobId]);
 
-        $fields = [
-            'title' => trim($_POST['title']),
+        $fields = array_merge($this->titleFieldsFromPost($_POST), [
             'department_id' => $_POST['department_id'] ?: null,
             'seniority_id' => $_POST['seniority_id'] ?: null,
             'country_id' => $_POST['country_id'] ?: null,
@@ -181,12 +436,11 @@ class JobController
             'salary_max' => $_POST['salary_max'] !== '' ? $_POST['salary_max'] : null,
             'salary_period' => $_POST['salary_period'] ?: 'annual',
             'hide_salary' => isset($_POST['hide_salary']) ? 1 : 0,
-        ];
+        ]);
 
         if ($exists) {
+            $this->requireJobManage($jobId);
             db()->update('jobs', $fields, 'id = :id', ['id' => $jobId]);
-            db()->query('DELETE FROM job_hiring_managers WHERE job_id = ?', [$jobId]);
-            db()->query('DELETE FROM job_interviewers WHERE job_id = ?', [$jobId]);
         } else {
             db()->insert('jobs', array_merge($fields, [
                 'id' => $jobId,
@@ -206,7 +460,7 @@ class JobController
     public function createPipeline()
     {
         $jobId = $this->wizardJobId();
-        $stages = db()->fetchAll('SELECT * FROM job_pipeline_stages WHERE job_id = ? ORDER BY sort_order', [$jobId]);
+        $stages = db()->fetchAll('SELECT * FROM job_pipeline_stages WHERE job_id = ? AND is_active = 1 ORDER BY sort_order', [$jobId]);
         $job = db()->fetch('SELECT * FROM jobs WHERE id = ?', [$jobId]);
         render('jobs.pipeline', [
             'title' => 'Pipeline',
@@ -245,6 +499,9 @@ class JobController
     {
         verify_csrf();
         $jobId = $this->wizardJobId();
+        if (!empty($_POST['skip_questions'])) {
+            redirect(url('jobs/create/draft-message'));
+        }
         db()->query('DELETE FROM job_interview_questions WHERE job_id = ?', [$jobId]);
         if (!empty($_POST['questions'])) {
             foreach ($_POST['questions'] as $idx => $q) {
@@ -371,8 +628,7 @@ class JobController
             flash('error', 'Select or enter at least one key skill.');
             redirect(url('jobs/edit/' . $id));
         }
-        db()->update('jobs', [
-            'title' => trim($_POST['title']),
+        db()->update('jobs', array_merge($this->titleFieldsFromPost($_POST), [
             'department_id' => $_POST['department_id'] ?: null,
             'seniority_id' => $_POST['seniority_id'] ?: null,
             'country_id' => $_POST['country_id'] ?: null,
@@ -390,9 +646,7 @@ class JobController
             'salary_max' => $_POST['salary_max'] ?: null,
             'salary_period' => $_POST['salary_period'] ?: 'annual',
             'hide_salary' => isset($_POST['hide_salary']) ? 1 : 0,
-        ], 'id = :id', ['id' => $id]);
-        db()->query('DELETE FROM job_hiring_managers WHERE job_id = ?', [$id]);
-        db()->query('DELETE FROM job_interviewers WHERE job_id = ?', [$id]);
+        ]), 'id = :id', ['id' => $id]);
         $this->syncManagers($id, $_POST);
         $this->syncExternalContacts($id, $_POST);
         redirect(url('jobs/edit/' . $id . '/pipeline'));
@@ -402,7 +656,7 @@ class JobController
     {
         $this->requireJobManage($id);
         $job = db()->fetch('SELECT * FROM jobs WHERE id = ?', [$id]);
-        $stages = db()->fetchAll('SELECT * FROM job_pipeline_stages WHERE job_id = ? ORDER BY sort_order', [$id]);
+        $stages = db()->fetchAll('SELECT * FROM job_pipeline_stages WHERE job_id = ? AND is_active = 1 ORDER BY sort_order', [$id]);
         render('jobs.pipeline', ['title' => 'Edit Pipeline', 'job' => $job, 'stages' => $stages, 'step' => 2, 'mode' => 'edit', 'activeNav' => 'jobs']);
     }
 
@@ -485,13 +739,16 @@ class JobController
         $tab = isset($_GET['tab']) ? $_GET['tab'] : 'interviews';
         $job = db()->fetch(
             "SELECT j.*, d.name as department_name, s.name as seniority_name,
-                    ci.name as city_name, st.name as state_name, co.name as country_name
+                    ci.name as city_name, st.name as state_name, co.name as country_name,
+                    creator.first_name AS creator_first_name, creator.last_name AS creator_last_name,
+                    creator.email AS creator_email
              FROM jobs j
              LEFT JOIN departments d ON d.id = j.department_id
              LEFT JOIN seniority_levels s ON s.id = j.seniority_id
              LEFT JOIN cities ci ON ci.id = j.city_id
              LEFT JOIN states st ON st.id = j.state_id
              LEFT JOIN countries co ON co.id = j.country_id
+             LEFT JOIN users creator ON creator.id = j.created_by
              WHERE j.id = ?",
             [$id]
         );
@@ -508,30 +765,63 @@ class JobController
         if ($tab === 'applicant-pool') {
             $applicants = db()->fetchAll(
                 "SELECT a.*, c.first_name, c.last_name, c.current_company, c.current_location, c.years_experience
-                 FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.job_id = ? ORDER BY a.application_date DESC",
+                 FROM applications a JOIN candidates c ON c.id = a.candidate_id
+                 WHERE a.job_id = ?" . sql_active_applications_only('a') . ' ORDER BY a.application_date DESC',
                 [$id]
             );
             render('jobs.show_applicant_pool', compact('job', 'applicants') + ['title' => $job['title'], 'activeNav' => 'jobs', 'tab' => $tab]);
             return;
         }
 
+        $stageFilter = isset($_GET['stage_id']) ? trim($_GET['stage_id']) : '';
+        $focusInterviewId = isset($_GET['focus']) ? trim($_GET['focus']) : '';
+        $pipelineStages = db()->fetchAll(
+            'SELECT id, name FROM job_pipeline_stages WHERE job_id = ? AND is_active = 1 ORDER BY sort_order',
+            [$id]
+        );
+
+        $params = [$id];
+        $stageSql = '';
+        if ($stageFilter !== '') {
+            $stageSql = ' AND i.stage_id = ?';
+            $params[] = $stageFilter;
+        }
+
         $interviews = db()->fetchAll(
             "SELECT i.*, c.first_name, c.last_name, c.id as candidate_id,
-                    a.decision,
-                    ir.id as report_id, ir.overall_score, ir.score_label, ps.name as stage_name
+                    a.decision, a.current_stage_id,
+                    ir.id as report_id, ir.overall_score, ir.score_label,
+                    ps.name as stage_name, ps.stage_type,
+                    CASE WHEN i.stage_id = a.current_stage_id THEN 1 ELSE 0 END AS is_current_round
              FROM interviews i
              JOIN applications a ON a.id = i.application_id
              JOIN candidates c ON c.id = a.candidate_id
-             LEFT JOIN interview_reports ir ON ir.interview_id = i.id
              LEFT JOIN job_pipeline_stages ps ON ps.id = i.stage_id
-             WHERE a.job_id = ? ORDER BY i.created_at DESC",
-            [$id]
+             OUTER APPLY (
+                SELECT TOP 1 ir2.id, ir2.overall_score, ir2.score_label
+                FROM interview_reports ir2
+                WHERE ir2.interview_id = i.id
+                ORDER BY ir2.created_at DESC
+             ) ir
+             WHERE a.job_id = ?" . sql_active_applications_only('a') . "{$stageSql}
+             ORDER BY is_current_round DESC, ps.sort_order DESC, i.created_at DESC",
+            $params
         );
+
+        foreach ($interviews as &$ivRow) {
+            if (($ivRow['status'] ?? '') === 'processing' && empty($ivRow['report_id'])) {
+                $ivRow['processing_hint'] = InterviewWorkflowService::processingHint($ivRow);
+            }
+        }
+        unset($ivRow);
 
         render('jobs.show_interviews', [
             'title' => $job['title'],
             'job' => $job,
             'interviews' => $interviews,
+            'pipelineStages' => $pipelineStages,
+            'stageFilter' => $stageFilter,
+            'focusInterviewId' => $focusInterviewId,
             'tab' => $tab,
             'canManageJob' => PermissionService::canManageJob($id),
             'activeNav' => 'jobs',
@@ -548,6 +838,9 @@ class JobController
 
     private function hasHiringTeam(array $post)
     {
+        if (!empty($post['hiring_team']) && is_array($post['hiring_team'])) {
+            return true;
+        }
         if (!empty($post['hiring_managers']) && is_array($post['hiring_managers'])) {
             return true;
         }
@@ -564,30 +857,50 @@ class JobController
 
     private function syncManagers($jobId, $post)
     {
-        if (!empty($post['hiring_managers'])) {
+        db()->query('DELETE FROM job_hiring_managers WHERE job_id = ?', [$jobId]);
+        try {
+            db()->query("DELETE FROM job_external_contacts WHERE job_id = ? AND contact_role = 'hiring_manager'", [$jobId]);
+        } catch (Exception $e) {
+        }
+
+        $dir = new EmployeeDirectoryService();
+        $team = !empty($post['hiring_team']) && is_array($post['hiring_team']) ? $post['hiring_team'] : [];
+        foreach ($team as $token) {
+            $dir->attachToJob($jobId, trim($token), 'hiring_manager');
+        }
+
+        if (empty($team) && !empty($post['hiring_managers'])) {
             foreach ($post['hiring_managers'] as $uid) {
                 if ($uid) {
                     db()->insert('job_hiring_managers', ['job_id' => $jobId, 'user_id' => $uid]);
                 }
             }
         }
-        if (!empty($post['interviewers'])) {
+
+        $this->insertExternalContacts($jobId, 'hiring_manager', $post['external_hm_name'] ?? [], $post['external_hm_email'] ?? []);
+    }
+
+    private function syncExternalContacts($jobId, $post)
+    {
+        db()->query('DELETE FROM job_interviewers WHERE job_id = ?', [$jobId]);
+        try {
+            db()->query("DELETE FROM job_external_contacts WHERE job_id = ? AND contact_role = 'interviewer'", [$jobId]);
+        } catch (Exception $e) {
+        }
+
+        $dir = new EmployeeDirectoryService();
+        $team = !empty($post['interviewer_team']) && is_array($post['interviewer_team']) ? $post['interviewer_team'] : [];
+        foreach ($team as $token) {
+            $dir->attachToJob($jobId, trim($token), 'interviewer');
+        }
+        if (empty($team) && !empty($post['interviewers'])) {
             foreach ($post['interviewers'] as $uid) {
                 if ($uid) {
                     db()->insert('job_interviewers', ['job_id' => $jobId, 'user_id' => $uid]);
                 }
             }
         }
-    }
 
-    private function syncExternalContacts($jobId, $post)
-    {
-        try {
-            db()->query('DELETE FROM job_external_contacts WHERE job_id = ?', [$jobId]);
-        } catch (Exception $e) {
-            return;
-        }
-        $this->insertExternalContacts($jobId, 'hiring_manager', $post['external_hm_name'] ?? [], $post['external_hm_email'] ?? []);
         $this->insertExternalContacts($jobId, 'interviewer', $post['external_iv_name'] ?? [], $post['external_iv_email'] ?? []);
     }
 
@@ -602,12 +915,15 @@ class JobController
                 continue;
             }
             $email = isset($emails[$i]) ? trim($emails[$i]) : null;
-            db()->insert('job_external_contacts', [
-                'job_id' => $jobId,
-                'contact_role' => $role,
-                'name' => $name,
-                'email' => $email ?: null,
-            ]);
+            try {
+                db()->insert('job_external_contacts', [
+                    'job_id' => $jobId,
+                    'contact_role' => $role,
+                    'name' => $name,
+                    'email' => $email !== '' ? $email : null,
+                ]);
+            } catch (Exception $e) {
+            }
         }
     }
 
@@ -635,9 +951,11 @@ class JobController
     {
         $criteria = !empty($skills) ? $skills : ['Relevant Experience', 'Cultural Fit', 'Technical Skills'];
         foreach ($criteria as $idx => $name) {
+            $fields = rubric_criterion_fields($name);
             db()->insert('job_rubric_criteria', [
                 'job_id' => $jobId,
-                'name' => $name,
+                'name' => $fields['name'],
+                'description' => $fields['description'],
                 'sort_order' => $idx,
             ]);
         }
@@ -658,11 +976,12 @@ class JobController
                 continue;
             }
             $description = isset($descs[$idx]) ? trim($descs[$idx]) : '';
+            $fields = rubric_criterion_fields($name, $description);
             $rid = isset($ids[$idx]) ? (int) $ids[$idx] : 0;
             if ($rid > 0) {
                 db()->update('job_rubric_criteria', [
-                    'name' => $name,
-                    'description' => $description,
+                    'name' => $fields['name'],
+                    'description' => $fields['description'],
                     'sort_order' => $idx,
                     'is_active' => 1,
                 ], 'id = :id AND job_id = :jid', ['id' => $rid, 'jid' => $jobId]);
@@ -670,8 +989,8 @@ class JobController
             } else {
                 $newId = db()->insert('job_rubric_criteria', [
                     'job_id' => $jobId,
-                    'name' => $name,
-                    'description' => $description,
+                    'name' => $fields['name'],
+                    'description' => $fields['description'],
                     'sort_order' => $idx,
                     'is_active' => 1,
                 ]);
@@ -691,38 +1010,61 @@ class JobController
 
     private function savePipelineStages($jobId, $post)
     {
-        if (empty($post['stages'])) {
+        $order = [];
+        if (!empty($post['stage_order']) && is_array($post['stage_order'])) {
+            $order = array_values(array_filter(array_map('trim', $post['stage_order'])));
+        } elseif (!empty($post['stages']) && is_array($post['stages'])) {
+            foreach ($post['stages'] as $stage) {
+                if (!empty($stage['id'])) {
+                    $order[] = $stage['id'];
+                }
+            }
+        }
+        if (empty($order)) {
             return;
         }
-        $keptCustomIds = [];
-        foreach ($post['stages'] as $idx => $stage) {
-            if (empty($stage['name']) || empty($stage['id'])) {
-                continue;
+
+        $namesById = [];
+        if (!empty($post['stages'])) {
+            foreach ($post['stages'] as $stage) {
+                if (!empty($stage['id'])) {
+                    $namesById[$stage['id']] = trim($stage['name'] ?? '');
+                }
             }
-            $row = db()->fetch('SELECT is_system FROM job_pipeline_stages WHERE id = ? AND job_id = ?', [$stage['id'], $jobId]);
+        }
+
+        foreach ($order as $idx => $stageId) {
+            $row = db()->fetch('SELECT is_system FROM job_pipeline_stages WHERE id = ? AND job_id = ?', [$stageId, $jobId]);
             if (!$row) {
                 continue;
             }
-            $update = ['sort_order' => $idx];
-            if (!(int) $row['is_system']) {
-                $update['name'] = $stage['name'];
-                $keptCustomIds[] = $stage['id'];
+            $update = ['sort_order' => $idx, 'is_active' => 1];
+            if (!(int) $row['is_system'] && isset($namesById[$stageId]) && $namesById[$stageId] !== '') {
+                $update['name'] = $namesById[$stageId];
             }
-            db()->update('job_pipeline_stages', $update, 'id = :id AND job_id = :jid', ['id' => $stage['id'], 'jid' => $jobId]);
+            db()->update('job_pipeline_stages', $update, 'id = :id AND job_id = :jid', ['id' => $stageId, 'jid' => $jobId]);
         }
-        if (!empty($keptCustomIds)) {
-            $placeholders = implode(',', array_fill(0, count($keptCustomIds), '?'));
-            db()->query(
-                'DELETE FROM job_pipeline_stages WHERE job_id = ? AND is_system = 0 AND id NOT IN (' . $placeholders . ')',
-                array_merge([$jobId], $keptCustomIds)
-            );
+
+        if (!empty($post['deleted_stage_ids']) && is_array($post['deleted_stage_ids'])) {
+            foreach ($post['deleted_stage_ids'] as $stageId) {
+                $stageId = trim($stageId);
+                if ($stageId === '') {
+                    continue;
+                }
+                $row = db()->fetch('SELECT is_system FROM job_pipeline_stages WHERE id = ? AND job_id = ?', [$stageId, $jobId]);
+                if (!$row || (int) $row['is_system']) {
+                    continue;
+                }
+                PipelineStageService::reassignCandidatesOffStage($jobId, $stageId);
+                db()->update('job_pipeline_stages', ['is_active' => 0], 'id = :id AND job_id = :jid', ['id' => $stageId, 'jid' => $jobId]);
+            }
         }
+
         if (!empty($post['new_stages'])) {
-            $maxOrder = (int) db()->fetch('SELECT MAX(sort_order) as m FROM job_pipeline_stages WHERE job_id = ?', [$jobId])['m'];
+            $maxOrder = count($order);
             foreach ($post['new_stages'] as $name) {
                 $name = trim($name);
                 if ($name) {
-                    $maxOrder++;
                     db()->insert('job_pipeline_stages', [
                         'id' => uuid(),
                         'job_id' => $jobId,
@@ -730,7 +1072,9 @@ class JobController
                         'stage_type' => 'round',
                         'sort_order' => $maxOrder,
                         'is_system' => 0,
+                        'is_active' => 1,
                     ]);
+                    $maxOrder++;
                 }
             }
         }

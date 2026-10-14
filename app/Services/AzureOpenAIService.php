@@ -13,6 +13,7 @@ class AzureOpenAIService
     private $useBearer;
     private $refineDeployment;
     private $refineEnabled;
+    private $foundryProject;
 
     public function __construct()
     {
@@ -22,6 +23,7 @@ class AzureOpenAIService
         $this->apiKey = $config['api_key'];
         $this->deployment = $config['deployment'];
         $this->deploymentId = isset($config['deployment_id']) ? $config['deployment_id'] : '';
+        $this->foundryProject = isset($config['foundry_project']) ? trim($config['foundry_project']) : '';
         $this->extractionDeployment = $config['extraction_deployment'];
         $this->apiVersion = $config['api_version'];
         $this->apiMode = isset($config['api_mode']) ? strtolower($config['api_mode']) : 'auto';
@@ -43,16 +45,6 @@ class AzureOpenAIService
     public function getExtractionDeployment()
     {
         return $this->extractionDeployment;
-    }
-
-    /**
-     * Legacy single-pass analysis (ANALYSIS_PIPELINE=legacy).
-     */
-    public function analyzeInterview($context)
-    {
-        $prompt = $this->buildLegacyAnalysisPrompt($context);
-        $response = $this->chat($prompt, true, $this->deployment, 0.1, 6000);
-        return $this->parseAnalysisJson($response);
     }
 
     /**
@@ -107,6 +99,68 @@ class AzureOpenAIService
     }
 
     /**
+     * Hiring desk preview — comparative brief across applicants on one job (not per-interview analysis).
+     */
+    public function generateJobPoolBrief(array $context)
+    {
+        $prompt = $this->buildJobPoolBriefPrompt($context);
+        $response = $this->chat(
+            $prompt,
+            true,
+            $this->deployment,
+            0.1,
+            9000,
+            $this->systemMessagePoolBrief()
+        );
+        return $this->parseAnalysisJson($response);
+    }
+
+    public function analyzeResumeJdMatch(array $context)
+    {
+        $prompt = $this->buildResumeJdMatchPrompt($context);
+        $response = $this->chat(
+            $prompt,
+            true,
+            $this->deployment,
+            0.0,
+            3000,
+            $this->systemMessagePoolBrief()
+        );
+        return $this->parseAnalysisJson($response);
+    }
+
+    /**
+     * Suggest key skills from a pasted job description / responsibilities text.
+     */
+    public function extractSkillsFromJobDescription(array $context)
+    {
+        $prompt = $this->buildJobSkillsExtractionPrompt($context);
+        $response = $this->chat(
+            $prompt,
+            true,
+            $this->extractionDeployment,
+            0.1,
+            2500,
+            $this->systemMessageSkillsExtraction()
+        );
+        return $this->parseAnalysisJson($response);
+    }
+
+    public function analyzePoolCompareBatch(array $context)
+    {
+        $prompt = $this->buildPoolCompareBatchPrompt($context);
+        $response = $this->chat(
+            $prompt,
+            true,
+            $this->deployment,
+            0.1,
+            5000,
+            $this->systemMessagePoolBrief()
+        );
+        return $this->parseAnalysisJson($response);
+    }
+
+    /**
      * GPT cleanup pass on raw STT output.
      */
     public function refineTranscript($rawTranscript, $jobContext = [])
@@ -132,7 +186,14 @@ STRICT rules:
 - Do NOT add, remove, or summarize lines — same number of speaker turns as raw
 - Do NOT add facts not clearly present in the raw text
 - Do NOT write phrases like "removed for clarity" or markdown labels like **Agent:**
-- Preserve [Interviewer]: and [Candidate]: prefixes if present
+- Preserve [Interviewer]: and [Candidate]: prefixes if present, exactly as given — do not attempt to reassign or correct speaker labels here; that is handled downstream
+- If a word could be a real word OR a misheard error, and you are not certain, LEAVE IT AS-IS. Do not guess.
+
+Examples of correct fixes:
+- "Elematic representitves" → "Elematic representatives" (spelling fix, safe)
+- "we did post tension beems" → "we did post-tension beams" (spelling fix, safe)
+- "kya kya equipments" — leave as-is (Hinglish, not an error)
+- If unsure whether a company name spelling is correct, leave exactly as transcribed — do not standardize.
 
 Return ONLY the corrected transcript. No preamble.
 
@@ -163,17 +224,17 @@ PROMPT;
             $systemMessage = 'You are an expert HR interview analyst. Return valid JSON only when requested. Never invent facts not present in the transcript.';
         }
         $messages = [
-            ['role' => 'system', 'content' => $systemMessage],
-            ['role' => 'user', 'content' => $prompt],
+            ['role' => 'system', 'content' => sanitize_utf8_string($systemMessage)],
+            ['role' => 'user', 'content' => sanitize_utf8_string($prompt)],
         ];
 
         $errors = [];
         foreach ($this->buildChatAttempts($deployment) as $attempt) {
-            $body = [
+            $body = sanitize_utf8_deep([
                 'messages' => $messages,
-                'temperature' => $temperature,
-                'max_tokens' => $maxTokens,
-            ];
+                'temperature' => (float) $temperature,
+                'max_tokens' => (int) $maxTokens,
+            ]);
             if ($attempt['mode'] === 'v1') {
                 $body['model'] = $attempt['deployment'];
             }
@@ -181,12 +242,23 @@ PROMPT;
                 $body['response_format'] = ['type' => 'json_object'];
             }
 
+            $jsonFlags = JSON_UNESCAPED_UNICODE;
+            if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
+                $jsonFlags |= JSON_INVALID_UTF8_SUBSTITUTE;
+            }
+            $payload = json_encode($body, $jsonFlags);
+            if ($payload === false) {
+                throw new RuntimeException(
+                    'Azure OpenAI request could not be encoded as JSON: ' . json_last_error_msg()
+                );
+            }
+
             foreach ($this->buildAuthHeaders() as $authHeaders) {
                 $headers = array_merge(['Content-Type: application/json'], $authHeaders);
                 $ch = curl_init($attempt['url']);
                 curl_setopt_array($ch, [
                     CURLOPT_POST => true,
-                    CURLOPT_POSTFIELDS => json_encode($body),
+                    CURLOPT_POSTFIELDS => $payload,
                     CURLOPT_HTTPHEADER => $headers,
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_TIMEOUT => 300,
@@ -208,7 +280,26 @@ PROMPT;
             }
         }
 
-        throw new RuntimeException('Azure OpenAI failed after all endpoint/auth attempts. ' . implode(' | ', $errors));
+        throw new RuntimeException(self::formatConnectFailure($errors, $this->deployment));
+    }
+
+    /**
+     * Short, actionable message for HR-facing errors (full detail still in logs / debug).
+     */
+    public static function formatConnectFailure(array $errors, $configuredDeployment = '')
+    {
+        $joined = implode(' | ', array_slice($errors, 0, 4));
+        $hint = 'Set AZURE_OPENAI_DEPLOYMENT to the exact deployment name from Azure Portal → your resource → Deployments '
+            . '(not the model SKU like gpt-4.1). On Foundry (*.services.ai.azure.com) use v1 with that name, or set AZURE_OPENAI_FOUNDRY_PROJECT if deployments are project-scoped. '
+            . 'Run: php scripts/test_integrations.php openai';
+        if ($configuredDeployment !== '') {
+            $hint .= ' Currently configured: AZURE_OPENAI_DEPLOYMENT=' . $configuredDeployment . '.';
+        }
+        if (preg_match('/Missed model deployment|DeploymentNotFound/i', $joined)) {
+            return 'Azure OpenAI: no matching model deployment on this resource. ' . $hint;
+        }
+
+        return 'Azure OpenAI failed after all endpoint/auth attempts. ' . $hint . ' Detail: ' . $joined;
     }
 
     /**
@@ -220,12 +311,60 @@ PROMPT;
         return $this->chat('Reply with JSON: {"ok":true}', true, $deployment, 0.0, 50);
     }
 
+    /**
+     * List deployment names on the resource (classic management API). Empty if unreachable.
+     *
+     * @return string[]
+     */
+    public function listDeploymentNames()
+    {
+        if (!$this->isConfigured()) {
+            return [];
+        }
+        $bases = array_values(array_unique(array_filter(array_merge(
+            [$this->endpoint],
+            $this->endpointFallbacks
+        ))));
+        foreach ($bases as $base) {
+            $base = $this->normalizeOpenAiBase($base);
+            if (strpos($base, 'services.ai.azure.com') !== false) {
+                continue;
+            }
+            $url = $base . '/openai/deployments?api-version=' . rawurlencode($this->apiVersion);
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_HTTPHEADER => ['api-key: ' . $this->apiKey],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 30,
+            ]);
+            $response = curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($code < 200 || $code >= 300) {
+                continue;
+            }
+            $data = json_decode($response, true);
+            if (empty($data['data']) || !is_array($data['data'])) {
+                continue;
+            }
+            $names = [];
+            foreach ($data['data'] as $row) {
+                if (!empty($row['id'])) {
+                    $names[] = $row['id'];
+                } elseif (!empty($row['model'])) {
+                    $names[] = $row['model'];
+                }
+            }
+
+            return array_values(array_unique($names));
+        }
+
+        return [];
+    }
+
     private function buildChatAttempts($deployment)
     {
-        $deployments = array_values(array_unique(array_filter([
-            $deployment,
-            $this->deploymentId,
-        ])));
+        $deployments = $this->deploymentNamesForAttempts($deployment);
 
         $bases = array_values(array_unique(array_filter(array_merge(
             [$this->endpoint],
@@ -233,22 +372,67 @@ PROMPT;
         ))));
 
         $attempts = [];
+        $seen = [];
         foreach ($bases as $base) {
             $base = $this->normalizeOpenAiBase($base);
+            $foundryHost = strpos($base, 'services.ai.azure.com') !== false;
+
+            if ($this->foundryProject !== '') {
+                $projectBase = $base . '/api/projects/' . rawurlencode($this->foundryProject);
+                foreach ($deployments as $dep) {
+                    $this->pushAttempt($attempts, $seen, $this->v1Attempt($projectBase, $dep, 'foundry-project'));
+                }
+            }
+
             foreach ($deployments as $dep) {
-                if ($this->apiMode === 'classic') {
-                    $attempts[] = $this->classicAttempt($base, $dep);
-                    continue;
+                $modes = $this->apiModesForBase($foundryHost);
+                foreach ($modes as $mode) {
+                    if ($mode === 'classic') {
+                        $this->pushAttempt($attempts, $seen, $this->classicAttempt($base, $dep));
+                    } else {
+                        $this->pushAttempt($attempts, $seen, $this->v1Attempt($base, $dep));
+                    }
                 }
-                if ($this->apiMode === 'v1') {
-                    $attempts[] = $this->v1Attempt($base, $dep);
-                    continue;
-                }
-                $attempts[] = $this->v1Attempt($base, $dep);
-                $attempts[] = $this->classicAttempt($base, $dep);
             }
         }
+
         return $attempts;
+    }
+
+    private function deploymentNamesForAttempts($deployment)
+    {
+        $names = array_values(array_unique(array_filter([trim((string) $deployment), trim($this->deployment)])));
+        $alt = trim($this->deploymentId);
+        if ($alt !== '' && !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $alt)) {
+            $names[] = $alt;
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    private function apiModesForBase($foundryServicesHost)
+    {
+        if ($this->apiMode === 'classic') {
+            return $foundryServicesHost ? [] : ['classic'];
+        }
+        if ($this->apiMode === 'v1') {
+            return ['v1'];
+        }
+        if ($foundryServicesHost) {
+            return ['v1'];
+        }
+
+        return ['classic', 'v1'];
+    }
+
+    private function pushAttempt(array &$attempts, array &$seen, array $attempt)
+    {
+        $key = $attempt['url'] . '|' . $attempt['mode'] . '|' . $attempt['deployment'];
+        if (isset($seen[$key])) {
+            return;
+        }
+        $seen[$key] = true;
+        $attempts[] = $attempt;
     }
 
     private function normalizeOpenAiBase($base)
@@ -260,13 +444,13 @@ PROMPT;
         return rtrim($base, '/');
     }
 
-    private function v1Attempt($base, $deployment)
+    private function v1Attempt($base, $deployment, $tag = 'v1')
     {
         return [
             'mode' => 'v1',
             'deployment' => $deployment,
-            'url' => $base . '/openai/v1/chat/completions',
-            'label' => 'v1 ' . $base . ' model=' . $deployment,
+            'url' => rtrim($base, '/') . '/openai/v1/chat/completions',
+            'label' => $tag . ' ' . $base . ' model=' . $deployment,
         ];
     }
 
@@ -301,12 +485,12 @@ PROMPT;
 
     private function systemMessageExtraction()
     {
-        return 'You extract interview Q&A from transcripts. No scoring or judgment. Every answer must be traceable to the transcript. Return valid JSON only.';
+        return 'You extract interview Q&A from transcripts. No scoring or judgment. Every answer must be traceable to the transcript. Speaker labels in the raw transcript may be wrong — infer actual speaker role from content per grounding rules. Return valid JSON only.';
     }
 
     private function systemMessageScoring()
     {
-        return 'You score job interviews using ONLY explicit transcript evidence. If evidence is missing, say "Not discussed in interview" or use null scores. Never infer resume facts or assume skills not demonstrated. Return valid JSON only.';
+        return 'You score job interviews using ONLY explicit transcript evidence. If evidence is missing, say "Not discussed in interview" or use null scores. Never infer resume facts or assume skills not demonstrated. Weight low-confidence QA pairs as weaker evidence, not equal to high-confidence pairs. Calibrate depth expected for strong (8-9) scores to seniority implied by job_title and qualifications. Return valid JSON only.';
     }
 
     private function systemMessageGrounding()
@@ -326,6 +510,8 @@ GROUNDING RULES (mandatory):
 6. When audio is unclear, say "Unclear from transcript" instead of inventing content.
 7. Prefer lower scores over confident guesses when evidence is weak.
 8. Planned questions listed below may NOT have been asked — only credit what appears in the transcript.
+9. SPEAKER LABELS MAY BE WRONG. [Interviewer]: and [Candidate]: prefixes come from automated diarization and are frequently mislabeled or swapped. Determine actual speaker role from CONTENT, not the label: the person answering career/experience questions in first person is the candidate. The person asking questions and steering topics is the interviewer. If a label contradicts its content, treat content as authoritative and note in extraction_notes / analysis_metadata.
+10. MUST-HAVE ENFORCEMENT: must_have items are pass/fail gates. If a must_have was not addressed, contradicted, or clearly unmet from transcript evidence, overall_score MUST NOT exceed 5. State this explicitly in recommendation as the primary driver when applicable.
 
 SCORING ANCHORS (use these consistently):
 - 0-3: No evidence or clear gap vs requirement
@@ -373,9 +559,12 @@ EXTRACTION RULES (judgment-free):
 - question: use the interviewer's words from the transcript when possible
 - answer_text: candidate's words; paraphrase only if verbatim is unreadable
 - transcript_quote: REQUIRED — shortest verbatim snippet from transcript supporting the answer (1-2 lines)
-- confidence: high | medium | low (low if audio unclear or overlapping speakers)
+- confidence: high | medium | low (low if audio unclear, overlapping speakers, OR speaker label had to be inferred/corrected against the raw prefix)
 - If no clear answer: answer_text="", confidence="low", note in extraction_notes
 - Do NOT invent questions that are not in the transcript
+- MERGING: if the interviewer asks a brief clarifying follow-up on the SAME topic immediately after the candidate's answer, treat follow-up and answer as part of the SAME qa_pair unless it introduces a clearly distinct topic.
+- SPLITTING: if the candidate's single turn answers two or more DIFFERENT planned questions, split into separate qa_pairs with separate transcript_quotes.
+- speaker_label_corrected: boolean — true if actual speaker role differs from the raw [Interviewer]/[Candidate] prefix in this segment
 
 Return JSON:
 {
@@ -387,12 +576,13 @@ Return JSON:
       "transcript_quote": "verbatim snippet from transcript",
       "confidence": "high|medium|low",
       "asked_by": "interviewer",
-      "answered_by": "candidate"
+      "answered_by": "candidate",
+      "speaker_label_corrected": false
     }
   ],
   "planned_questions_asked": ["list planned questions that were actually asked"],
   "planned_questions_not_asked": ["planned questions with no evidence in transcript"],
-  "extraction_notes": "unclear audio, overlaps, or gaps"
+  "extraction_notes": "unclear audio, overlaps, gaps, or speaker-label corrections made"
 }
 
 Job Title: {$context['job_title']}
@@ -423,10 +613,13 @@ OUTPUT RULES:
 - Every overview field must cite transcript-backed facts only
 - criterion_scores: include evidence_quotes[] (1-3 short quotes per criterion)
 - If insufficient_evidence is true, set score to null and explain in evidence_notes
+- For any QA pair with confidence=low, do NOT treat it as strong evidence — note low-confidence source in evidence_notes
 - integrity: only flag cheating if specific patterns appear in transcript (e.g. reading scripted answers, third-party voice) — default low
 - information_completeness_score: % of planned questions actually covered in transcript
-- topic_adherence_score: how well interview stayed on role-related topics (from transcript only)
+- topic_adherence_score: how well interview stayed on role-related topics (from transcript only). If roughly >15% of content was off-topic for evaluating this role, note in analysis_metadata and reflect in topic_adherence_score.
 - recommendation: Must | Maybe | No — with one-sentence reason tied to evidence
+- SCORE-TONE CONSISTENCY: if overall_score is 7+, recommendation must not primarily hedge ("suggests caution", "requires further clarification") — lower the score instead.
+- SHORT/ABORTED INTERVIEW: if information_completeness_score would be below 20%, set overall_score, experience_score, culture_score, soft_skills_score to null and recommendation to "Insufficient data — interview too short/incomplete to evaluate".
 
 Return JSON:
 {
@@ -440,7 +633,14 @@ Return JSON:
       "score": 0-10 or null,
       "insufficient_evidence": false,
       "evidence_quotes": ["quote from transcript"],
-      "evidence_notes": "what supports this score, or why evidence is missing"
+      "evidence_notes": "what supports this score, or why evidence is missing, or low-confidence-source caveat"
+    }
+  ],
+  "must_have_check": [
+    {
+      "requirement": "must-have item text",
+      "status": "met|unmet|unclear",
+      "evidence": "transcript evidence or Not discussed in interview"
     }
   ],
   "overview": {
@@ -452,7 +652,7 @@ Return JSON:
     "qualification_match": "based on what candidate SAID in interview vs JD — not resume",
     "logistics": "salary, location, notice period if discussed, else Not discussed in interview",
     "follow_up": "suggested follow-up questions for areas not covered",
-    "recommendation": "Must | Maybe | No — reason"
+    "recommendation": "Must | Maybe | No — reason, consistent in tone with overall_score"
   },
   "conversation_phases": [{"phase": "opening|technical|behavioral|closing", "summary": "brief factual summary"}],
   "key_questions_captured": ["themes actually discussed"],
@@ -462,7 +662,8 @@ Return JSON:
   "analysis_metadata": {
     "transcript_quality": "good|fair|poor",
     "evidence_strength": "strong|moderate|weak",
-    "hallucination_risk": "low|medium|high"
+    "hallucination_risk": "low|medium|high",
+    "off_topic_content_flag": "none|minor|substantial — note what off-topic content was if substantial"
   },
   "integrity": {
     "cheating_likelihood": "low|medium|high",
@@ -490,6 +691,171 @@ Full Transcript:
 PROMPT;
     }
 
+    private function systemMessagePoolBrief()
+    {
+        return 'You are a senior talent advisor helping HR compare candidates for ONE job opening. '
+            . 'You produce comparative insights only from the evidence provided. '
+            . 'You never auto-hire or reject. Return valid JSON only.';
+    }
+
+    private function systemMessageSkillsExtraction()
+    {
+        return 'You extract concise skill labels from job descriptions for an ATS skill pool. '
+            . 'Return valid JSON only. Skills must be short (1–4 words), no sentences.';
+    }
+
+    private function buildJobSkillsExtractionPrompt(array $context)
+    {
+        $jd = mb_substr((string) ($context['job_description'] ?? ''), 0, 14000);
+        $title = $context['job_title'] ?? '';
+        $quals = mb_substr((string) ($context['qualifications'] ?? ''), 0, 4000);
+
+        return <<<PROMPT
+Read this job description and list the most important technical and professional skills for hiring.
+
+RULES:
+- Return 8–20 distinct skills, ordered by importance for the role
+- Each skill: short label (e.g. "React", "Project management", "SAP FICO") — not full sentences
+- Include tools, frameworks, domains, certifications, and soft skills only if clearly required
+- Do not invent skills not supported by the text
+- Prefer standard industry wording
+
+Return JSON:
+{
+  "reasoning": "brief",
+  "skills": ["skill one", "skill two"]
+}
+
+Job title: {$title}
+Qualifications (if any): {$quals}
+
+Job description / responsibilities:
+{$jd}
+PROMPT;
+    }
+
+    private function buildResumeJdMatchPrompt(array $context)
+    {
+        $resume = $context['resume_text'] ?? '';
+        return <<<PROMPT
+Compare this resume to the job requirements. Use resume text only.
+
+Return JSON:
+{
+  "reasoning": "brief",
+  "match_score": 0-10,
+  "match_grade": "A|B|C",
+  "strengths_vs_jd": ["bullet"],
+  "gaps_vs_jd": ["bullet"],
+  "one_line_summary": "for HR"
+}
+
+Job: {$context['job_title']}
+Skills: {$context['key_skills']}
+Qualifications: {$context['qualifications']}
+Must have: {$context['must_have']}
+
+Resume:
+{$resume}
+PROMPT;
+    }
+
+    private function buildPoolCompareBatchPrompt(array $context)
+    {
+        $json = json_encode($context['candidates'], JSON_UNESCAPED_UNICODE);
+        return <<<PROMPT
+Listwise rank these candidates for the same job (batch {$context['batch_index']} of {$context['batch_total']}). Compare relative fit, not absolute scores alone.
+
+Return JSON:
+{
+  "reasoning": "step-by-step comparison",
+  "pool_narrative": "1-2 sentences on this batch",
+  "ranking": [
+    {
+      "application_id": "uuid",
+      "report_id": "uuid",
+      "rank_in_batch": 1,
+      "headline": "short",
+      "why": "one sentence with evidence"
+    }
+  ]
+}
+
+Job: {$context['job_title']}
+Must have: {$context['must_have']}
+Skills: {$context['key_skills']}
+
+Candidates:
+{$json}
+PROMPT;
+    }
+
+    private function buildJobPoolBriefPrompt(array $context)
+    {
+        $candidatesJson = json_encode($context['candidates'], JSON_UNESCAPED_UNICODE);
+        $rubricJson = json_encode($context['rubric'], JSON_UNESCAPED_UNICODE);
+        $distJson = json_encode($context['score_distribution'], JSON_UNESCAPED_UNICODE);
+        $truncNote = (int) ($context['pool_truncated_count'] ?? 0) > 0
+            ? 'Note: ' . (int) $context['pool_truncated_count'] . ' additional reported candidates were omitted from this prompt (lowest scores). Mention uncertainty if relevant.'
+            : '';
+
+        return <<<PROMPT
+Compare ALL candidates in this applicant pool for the same job. Produce ORIGINAL comparative insight — not a copy of individual report summaries.
+
+RULES:
+- Use only facts from the candidate bundles (scores, qa_sample, evidence_by_criterion, must_have_check, overview_snippets).
+- Every comparative claim must cite application_id and report_id in evidence_refs.
+- suggested_shortlist is a PROPOSAL for HR review (max 5). Do not say "hire" or "reject".
+- head_to_head: 1-3 pairs among top contenders with clear tradeoffs for THIS role.
+- If evidence is thin, say so and lower confidence.
+- {$truncNote}
+
+Return JSON with this shape (reasoning first):
+{
+  "reasoning": "internal step-by-step comparison across the pool (plain text)",
+  "disclaimer": "Assistive brief for HR review — not an automated hiring decision",
+  "confidence": "high|medium|low",
+  "cohort_summary": "2-4 sentences: what this pool looks like vs the role bar",
+  "pool_interpretation": "how to read score spread / who stands out / where scores cluster",
+  "suggested_shortlist": [
+    {
+      "application_id": "uuid",
+      "report_id": "uuid",
+      "rank": 1,
+      "headline": "short label",
+      "why_consider": ["bullet"],
+      "risks_or_gaps": ["bullet"],
+      "evidence_refs": [{"application_id":"uuid","report_id":"uuid","quote":"short quote or score fact"}]
+    }
+  ],
+  "head_to_head": [
+    {
+      "application_id_a": "uuid",
+      "application_id_b": "uuid",
+      "summary": "who is stronger for what on this role",
+      "tradeoffs": ["A better at X", "B better at Y"],
+      "evidence_refs": [{"application_id":"uuid","report_id":"uuid","quote":"..."}]
+    }
+  ],
+  "committee_questions": ["questions HR should ask before advancing anyone"],
+  "coverage_gaps": ["role requirements weakly evidenced across the pool"],
+  "integrity_or_risk_notes": ["pool-level red flags worth HR judgment"]
+}
+
+Job Title: {$context['job_title']}
+Key skills: {$context['key_skills']}
+Qualifications: {$context['qualifications']}
+Must have: {$context['must_have']}
+Responsibilities: {$context['key_responsibility']}
+Rubric: {$rubricJson}
+Pool size (with reports): {$context['pool_size_with_reports']}
+Score distribution: {$distJson}
+
+Candidates:
+{$candidatesJson}
+PROMPT;
+    }
+
     private function buildGroundingAuditPrompt($context)
     {
         $scoringJson = json_encode(
@@ -505,6 +871,8 @@ RULES:
 - Mark claims as supported only if a direct quote exists
 - Suggest lowering scores that lack evidence
 - Do NOT add new candidate facts
+- Verify must_have_check statuses against transcript — flag if any "met" lacks evidence
+- Verify overall_score and recommendation tone agree — flag if score is 7+ but recommendation is hedged, or score is low but recommendation is confident
 - safe_summary: 2-3 sentences using ONLY verified transcript facts
 
 Return JSON:
@@ -512,7 +880,7 @@ Return JSON:
   "grounding_score": 0-100,
   "unsupported_claims": [
     {
-      "location": "overview.strengths | criterion_scores[0] | etc",
+      "location": "overview.strengths | criterion_scores[0] | must_have_check[0] | etc",
       "claim": "the questionable claim",
       "verdict": "unsupported|partial|supported",
       "transcript_quote": "quote if supported, else empty"
@@ -525,6 +893,10 @@ Return JSON:
       "suggested_max_score": 0-10
     }
   ],
+  "score_tone_mismatch": {
+    "detected": false,
+    "detail": "explanation if detected"
+  },
   "missing_planned_questions": ["planned questions not found in transcript"],
   "transcript_quality_issues": ["gaps, unclear audio, etc"],
   "safe_summary": "conservative summary for HR",
@@ -536,53 +908,6 @@ Job Title: {$context['job_title']}
 
 Scoring output to audit:
 {$scoringJson}
-
-Transcript:
-{$context['transcript']}
-PROMPT;
-    }
-
-    private function buildLegacyAnalysisPrompt($context)
-    {
-        $criteria = implode(', ', $context['criteria']);
-        return <<<PROMPT
-Analyze this job interview transcript and return JSON with this exact structure:
-{
-  "overall_score": 0-10,
-  "experience_score": 0-10,
-  "culture_score": 0-10,
-  "soft_skills_score": 0-10,
-  "criterion_scores": [{"name": "criterion name", "score": 0-10}],
-  "overview": {
-    "strengths": "text",
-    "weaknesses": "text",
-    "red_flags": "text",
-    "team_fit": "text",
-    "cheating_detection": "text",
-    "qualification_match": "text",
-    "logistics": "text",
-    "follow_up": "text",
-    "recommendation": "text"
-  },
-  "qa_notes": [{"question": "question asked", "answer_summary": "summary of answer"}],
-  "conversation_phases": [{"phase": "opening|technical|behavioral|closing", "summary": "brief summary"}],
-  "key_questions_captured": ["important question themes covered"],
-  "topic_adherence_score": 0-100,
-  "information_completeness_score": 0-100,
-  "integrity": {
-    "cheating_likelihood": "low|medium|high",
-    "ai_answer_patterns": "not_detected|detected|na"
-  }
-}
-
-Job Title: {$context['job_title']}
-Key Skills: {$context['key_skills']}
-Qualifications: {$context['qualifications']}
-Must Have: {$context['must_have']}
-Scoring Criteria: {$criteria}
-
-Interview Questions:
-{$context['questions']}
 
 Transcript:
 {$context['transcript']}

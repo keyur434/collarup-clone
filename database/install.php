@@ -5,7 +5,7 @@
  */
 require __DIR__ . '/../app/bootstrap.php';
 
-echo "CollarUp Clone - MSSQL Database Setup\n";
+echo "TalentPulse - MSSQL Database Setup\n";
 echo "=====================================\n\n";
 
 $config = config('database');

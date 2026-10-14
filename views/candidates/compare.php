@@ -1,5 +1,4 @@
-<?php
-$pageBack = ['url' => url('candidates?job_id=' . $job['id']), 'label' => 'Candidates'];
+<?php $breadcrumbs = nav_trail_job($job, 'Compare Candidates'); ?>
 $count = count($candidates);
 ?>
 

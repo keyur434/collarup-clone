@@ -124,6 +124,30 @@ foreach ($rows as $r) {
     echo 'meeting_url: ' . ($r['meeting_url'] ? substr($r['meeting_url'], 0, 80) . '…' : 'MISSING') . PHP_EOL;
     echo 'teams_meeting_id: ' . ($r['teams_meeting_id'] ? 'set' : 'MISSING (OK if join URL + organizer set)') . PHP_EOL;
     echo 'organizer: ' . ($r['teams_organizer_user_id'] ?: 'MISSING') . PHP_EOL;
+    echo 'fetch_attempts: ' . (int) ($r['recording_fetch_attempts'] ?? 0) . PHP_EOL;
+
+    $media = db()->fetch('SELECT COUNT(*) AS c FROM interview_media WHERE interview_id = ?', [$r['id']]);
+    echo 'interview_media rows: ' . (int) $media['c'] . PHP_EOL;
+
+    $jobs = db()->fetchAll(
+        "SELECT TOP 5 id, status, attempts, error_message, created_at, completed_at
+         FROM job_queue
+         WHERE job_type = 'FetchTeamsRecording' AND payload LIKE ?
+         ORDER BY id DESC",
+        ['%' . $r['id'] . '%']
+    );
+    if (!empty($jobs)) {
+        echo 'Recent FetchTeamsRecording jobs:' . PHP_EOL;
+        foreach ($jobs as $j) {
+            echo '  #' . $j['id'] . ' ' . $j['status'] . ' attempts=' . $j['attempts'];
+            if (!empty($j['error_message'])) {
+                echo ' — ' . substr($j['error_message'], 0, 120);
+            }
+            echo ' (' . $j['created_at'] . ')' . PHP_EOL;
+        }
+    } else {
+        echo 'FetchTeamsRecording jobs: none queued for this interview' . PHP_EOL;
+    }
 
     $reasons = [];
     if (!$teams->graphReady()) {
@@ -148,8 +172,13 @@ foreach ($rows as $r) {
             $reasons[] = 'fetch_after still in the future (set correct end time or re-save after deploy)';
         }
     }
-    if (!in_array($r['status'], ['scheduled', 'processing', 'ongoing', 'incomplete'], true)) {
+    $pendingOk = $r['status'] === 'pending'
+        && !empty($r['scheduled_date'])
+        && !empty($r['meeting_url']);
+    if (!in_array($r['status'], ['scheduled', 'processing', 'ongoing', 'incomplete', 'completed'], true) && !$pendingOk) {
         $reasons[] = 'Interview status not eligible for auto-fetch: ' . $r['status'];
+    } elseif ($pendingOk) {
+        $reasons[] = 'Status is pending (poll will promote to scheduled after deploy fix)';
     }
 
     if (empty($reasons)) {
@@ -166,11 +195,25 @@ foreach ($rows as $r) {
         echo 'Reset fetching → waiting (if was fetching).' . PHP_EOL;
     }
     if ($forceQueue && ($interviewId === '' || $interviewId === $r['id'])) {
-        if ($teams->queueRecordingFetchIfDue($r['id'])) {
-            echo 'Queued FetchTeamsRecording job.' . PHP_EOL;
-        } else {
-            echo 'Could not queue (not due or blocked).' . PHP_EOL;
+        try {
+            if ($teams->forceQueueRecordingFetch($r['id'])) {
+                echo 'Queued FetchTeamsRecording job (immediate).' . PHP_EOL;
+            } else {
+                echo 'Could not queue — check meeting_url, organizer, and interview_media.' . PHP_EOL;
+            }
+        } catch (Exception $e) {
+            echo 'Queue failed: ' . $e->getMessage() . PHP_EOL;
         }
+    }
+
+    $lastErr = db()->fetch(
+        "SELECT TOP 1 status, error_message, created_at FROM job_queue
+         WHERE job_type = 'FetchTeamsRecording' AND payload LIKE ? AND error_message IS NOT NULL AND LTRIM(error_message) <> ''
+         ORDER BY id DESC",
+        ['%' . $r['id'] . '%']
+    );
+    if ($lastErr && !empty($lastErr['error_message']) && (int) $media['c'] === 0) {
+        echo 'Last fetch error (' . $lastErr['status'] . '): ' . $lastErr['error_message'] . PHP_EOL;
     }
 }
 

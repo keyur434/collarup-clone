@@ -6,12 +6,12 @@ require __DIR__ . '/../../app/bootstrap.php';
 
 $about = company_about_default();
 if ($about === '') {
-    echo "No default company_about.txt found.\n";
+    echo "No usable company_about.txt (empty or placeholder only).\n";
     exit(1);
 }
 
 $existing = AppSettingsService::get('company_about', null);
-if ($existing !== null && trim($existing) !== '') {
+if ($existing !== null && trim($existing) !== '' && !company_about_is_setup_instructions($existing)) {
     echo "company_about already set in app_settings — skipped.\n";
     exit(0);
 }

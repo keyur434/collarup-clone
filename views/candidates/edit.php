@@ -1,5 +1,9 @@
 <?php
-$pageBack = ['url' => url('candidates'), 'label' => 'Candidates'];
+$breadcrumbs = nav_trail_dashboard(
+    'Candidates',
+    url('candidates'),
+    trim($app['first_name'] . ' ' . $app['last_name'])
+);
 $archived = !empty($app['is_archived']);
 $resumeExt = !empty($app['resume_path']) ? strtolower(pathinfo($app['resume_path'], PATHINFO_EXTENSION)) : '';
 $canPreviewPdf = $resumeExt === 'pdf';
@@ -9,6 +13,10 @@ $canPreviewPdf = $resumeExt === 'pdf';
     <div>
         <h1>Manage Candidate</h1>
         <p><?= e($app['first_name'] . ' ' . $app['last_name']) ?> — <?= e($app['job_title']) ?></p>
+        <p class="hint" style="margin-top:6px">
+            Recruiter / HR: <strong><?= e(user_display_name($app['recruiter_first_name'] ?? '', $app['recruiter_last_name'] ?? '')) ?></strong>
+            · Job created by: <strong><?= e(user_display_name($app['job_creator_first_name'] ?? '', $app['job_creator_last_name'] ?? '')) ?></strong>
+        </p>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
             <?php if ($archived): ?><span class="badge badge-gray">Archived</span><?php endif; ?>
             <?php if (($emailAppCount ?? 1) > 1): ?>
@@ -29,10 +37,21 @@ $canPreviewPdf = $resumeExt === 'pdf';
     <h3 style="font-size:0.9rem;margin-bottom:10px">Other job applications (same person)</h3>
     <ul style="margin:0;padding-left:18px;font-size:0.85rem">
         <?php foreach ($otherApplications as $oa): ?>
-        <li style="margin-bottom:6px">
+        <li style="margin-bottom:6px;display:flex;flex-wrap:wrap;align-items:center;gap:6px">
             <a href="<?= url('applications/' . $oa['id'] . '/manage') ?>"><?= e($oa['job_title']) ?></a>
             — <?= e(ucfirst($oa['status'])) ?>
             <?php if (!empty($oa['is_archived'])): ?><span class="badge badge-gray" style="font-size:0.65rem">Archived</span><?php endif; ?>
+            <?php if ($canManage && empty($oa['is_archived'])): ?>
+            <form method="POST" action="<?= url('applications/' . $oa['id'] . '/archive') ?>" style="display:inline;margin:0" onsubmit="return confirm('Remove this candidate from <?= e($oa['job_title']) ?>? They will stay on other jobs.')">
+                <?= csrf_field() ?>
+                <button type="submit" class="btn btn-outline btn-sm" style="font-size:0.68rem;padding:2px 8px">Remove from job</button>
+            </form>
+            <?php elseif ($canManage && !empty($oa['is_archived'])): ?>
+            <form method="POST" action="<?= url('applications/' . $oa['id'] . '/delete') ?>" style="display:inline;margin:0" onsubmit="return confirm('Permanently delete this archived application?')">
+                <?= csrf_field() ?>
+                <button type="submit" class="btn btn-outline btn-sm" style="font-size:0.68rem;padding:2px 8px">Delete listing</button>
+            </form>
+            <?php endif; ?>
         </li>
         <?php endforeach; ?>
     </ul>
@@ -41,6 +60,19 @@ $canPreviewPdf = $resumeExt === 'pdf';
 
 <form method="POST" action="<?= url('applications/' . $app['id'] . '/manage') ?>" enctype="multipart/form-data" class="card form-card">
     <?= csrf_field() ?>
+
+    <?php if (!empty($recruiters)): ?>
+    <h3 style="font-size:0.9rem;margin-bottom:12px">Ownership</h3>
+    <div class="form-group" style="margin-bottom:16px">
+        <label>Recruiter / HR owner</label>
+        <select name="recruiter_id">
+            <option value="">Unassigned</option>
+            <?php foreach ($recruiters as $r): ?>
+            <option value="<?= (int) $r['id'] ?>" <?= (int) ($app['recruiter_id'] ?? 0) === (int) $r['id'] ? 'selected' : '' ?>><?= e(user_display_name($r['first_name'], $r['last_name'])) ?> (<?= e($r['email']) ?>)</option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <?php endif; ?>
 
     <h3 style="font-size:0.9rem;margin-bottom:12px">Profile</h3>
     <div class="form-grid cols-2">
@@ -92,18 +124,26 @@ $canPreviewPdf = $resumeExt === 'pdf';
                 <?php endforeach; ?>
             </select>
         </div>
+        <div class="form-group"><label>Current CTC</label><input name="current_ctc" value="<?= e($app['current_ctc'] ?? '') ?>" placeholder="e.g. 18 LPA"></div>
+        <div class="form-group"><label>Expected CTC</label><input name="expected_ctc" value="<?= e($app['expected_ctc'] ?? '') ?>" placeholder="e.g. 22 LPA"></div>
     </div>
 
     <h3 style="font-size:0.9rem;margin:20px 0 12px">Resume</h3>
     <?php if (!empty($app['resume_path'])): ?>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
         <a href="<?= resume_url($app['id']) ?>" class="btn btn-outline btn-sm">Download</a>
         <?php if ($canPreviewPdf): ?>
-        <a href="<?= resume_url($app['id'], true) ?>" target="_blank" class="btn btn-outline btn-sm">Open preview</a>
+        <a href="<?= resume_url($app['id'], true) ?>" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Open in new tab</a>
+        <?php else: ?>
+        <span class="hint" style="margin:0">Inline preview is for PDF only (this file is <?= e($resumeExt ?: 'unknown') ?>).</span>
         <?php endif; ?>
     </div>
     <?php if ($canPreviewPdf): ?>
-    <iframe src="<?= resume_url($app['id'], true) ?>" style="width:100%;height:420px;border:1px solid var(--border);border-radius:8px;margin-bottom:12px"></iframe>
+    <div class="resume-preview-panel" style="margin-bottom:12px">
+        <object data="<?= resume_url($app['id'], true) ?>" type="application/pdf" style="width:100%;height:480px;border:1px solid var(--border);border-radius:8px;display:block">
+            <iframe src="<?= resume_url($app['id'], true) ?>" title="Resume preview" style="width:100%;height:480px;border:0;border-radius:8px"></iframe>
+        </object>
+    </div>
     <?php endif; ?>
     <?php else: ?>
     <p class="hint" style="margin-bottom:8px">No resume on file.</p>
@@ -130,7 +170,7 @@ $canPreviewPdf = $resumeExt === 'pdf';
             <select name="new_job_id" id="move_job_id" required onchange="loadMoveStages(this.value)">
                 <option value="">Select job</option>
                 <?php foreach ($jobs as $j): if ($j['id'] === $app['job_id']) continue; ?>
-                <option value="<?= $j['id'] ?>"><?= e($j['title']) ?></option>
+                <option value="<?= $j['id'] ?>"><?= e(job_select_option_label($j)) ?></option>
                 <?php endforeach; ?>
             </select>
         </div>
@@ -140,9 +180,9 @@ $canPreviewPdf = $resumeExt === 'pdf';
             </select>
         </div>
         <div class="form-group" style="align-self:end">
-            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <input type="checkbox" name="archive_current" value="1" checked>
-                Archive current application
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.82rem" title="Leave unchecked to remove them from this job listing after the move">
+                <input type="checkbox" name="keep_on_source_job" value="1">
+                Also keep on this job (duplicate listing)
             </label>
             <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('Move candidate to selected job?')">Move candidate</button>
         </div>

@@ -20,7 +20,7 @@
 
                 </svg>
 
-                CollarUp
+                <?= e(app_name()) ?>
 
             </div>
 

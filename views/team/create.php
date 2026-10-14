@@ -1,3 +1,10 @@
+<?php
+$breadcrumbs = nav_trail_dashboard(
+    'Team Management',
+    url('team'),
+    $member ? 'Edit Team Member' : 'Add Team Member'
+);
+?>
 <div class="page-header">
     <div>
         <h1><?= $member ? 'Edit Team Member' : 'Add Team Member' ?></h1>

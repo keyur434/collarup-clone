@@ -1,7 +1,8 @@
-# AI Prompts — CollarUp Clone
+# AI Prompts — TalentPulse
 
-> **Version:** `v3-grounded` (`InterviewAnalysisOrchestrator::PROMPT_VERSION`)  
-> **Source:** `app/Services/AzureOpenAIService.php`  
+> **Full prompt text (all system + user templates):** [`PROMPTS_FULL.md`](PROMPTS_FULL.md)  
+> **Version:** `v4-speaker-musthave` (`InterviewAnalysisOrchestrator::PROMPT_VERSION`) — see revision notes in repo history / `AzureOpenAIService.php`  
+> **Source of truth in code:** `app/Services/AzureOpenAIService.php`  
 > **Disable grounding pass:** `ANALYSIS_GROUNDING_PASS=false` in `.env`
 
 ## Pipeline

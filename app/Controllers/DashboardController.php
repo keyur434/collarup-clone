@@ -4,6 +4,9 @@ class DashboardController
 {
     public function index()
     {
+        $successPeriod = $this->successRatePeriod();
+        $successRate = $this->buildSuccessRateChart($successPeriod);
+
         $stats = [
             'total'        => db()->fetch('SELECT COUNT(*) as c FROM applications')['c'],
             'scheduled'    => db()->fetch("SELECT COUNT(*) as c FROM interviews WHERE status = 'scheduled'")['c'],
@@ -56,10 +59,117 @@ class DashboardController
         render('dashboard.index', [
             'title' => 'Dashboard',
             'stats' => $stats,
+            'successRate' => $successRate,
+            'successPeriod' => $successPeriod,
             'pending' => $pending,
             'scheduled' => $scheduled,
             'completed' => $completed,
             'activeNav' => 'dashboard',
         ]);
+    }
+
+    private function successRatePeriod()
+    {
+        $p = isset($_GET['success_period']) ? (string) $_GET['success_period'] : 'month';
+        return in_array($p, ['month', 'week', 'year'], true) ? $p : 'month';
+    }
+
+    private function buildSuccessRateChart($period)
+    {
+        $tz = new DateTimeZone('UTC');
+        $now = new DateTimeImmutable('now', $tz);
+
+        if ($period === 'week') {
+            $start = $now->modify('-6 days')->setTime(0, 0, 0);
+            $end = $now->setTime(23, 59, 59);
+        } elseif ($period === 'year') {
+            $startYear = (int) $now->format('Y') - 6;
+            $start = (new DateTimeImmutable($startYear . '-01-01 00:00:00', $tz));
+            $end = $now->setTime(23, 59, 59);
+        } else {
+            $start = $now->modify('first day of -6 months')->setTime(0, 0, 0);
+            $end = $now->setTime(23, 59, 59);
+        }
+
+        $bucketDefs = $this->successRateBucketDefs($period, $start, $now);
+        $counts = [];
+        foreach ($bucketDefs as $def) {
+            $counts[$def['key']] = ['passed' => 0, 'rejected' => 0];
+        }
+
+        $rows = db()->fetchAll(
+            "SELECT decision, COALESCE(updated_at, created_at) AS decided_at
+             FROM applications
+             WHERE is_archived = 0
+               AND decision IN ('advance', 'offer', 'reject')
+               AND COALESCE(updated_at, created_at) >= ?
+               AND COALESCE(updated_at, created_at) <= ?",
+            [$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s')]
+        );
+
+        foreach ($rows as $row) {
+            $dt = new DateTimeImmutable($row['decided_at'], $tz);
+            $key = $this->successRateBucketKey($dt, $period);
+            if (!isset($counts[$key])) {
+                continue;
+            }
+            if ($row['decision'] === 'reject') {
+                $counts[$key]['rejected']++;
+            } else {
+                $counts[$key]['passed']++;
+            }
+        }
+
+        $points = [];
+        foreach ($bucketDefs as $def) {
+            $c = $counts[$def['key']];
+            $points[] = [
+                'label' => $def['label'],
+                'passed' => $c['passed'],
+                'rejected' => $c['rejected'],
+            ];
+        }
+
+        return [
+            'points' => $points,
+            'paths' => dashboard_success_rate_chart_paths($points),
+        ];
+    }
+
+    private function successRateBucketDefs($period, DateTimeImmutable $start, DateTimeImmutable $now)
+    {
+        $defs = [];
+        if ($period === 'week') {
+            for ($i = 0; $i < 7; $i++) {
+                $d = $start->modify('+' . $i . ' days');
+                $defs[] = ['key' => $d->format('Y-m-d'), 'label' => $d->format('d')];
+            }
+            return $defs;
+        }
+        if ($period === 'year') {
+            $y0 = (int) $start->format('Y');
+            for ($i = 0; $i < 7; $i++) {
+                $y = $y0 + $i;
+                $defs[] = ['key' => (string) $y, 'label' => (string) $y];
+            }
+            return $defs;
+        }
+        $cursor = $start;
+        for ($i = 0; $i < 7; $i++) {
+            $defs[] = ['key' => $cursor->format('Y-m'), 'label' => $cursor->format('M')];
+            $cursor = $cursor->modify('+1 month');
+        }
+        return $defs;
+    }
+
+    private function successRateBucketKey(DateTimeImmutable $dt, $period)
+    {
+        if ($period === 'week') {
+            return $dt->format('Y-m-d');
+        }
+        if ($period === 'year') {
+            return $dt->format('Y');
+        }
+        return $dt->format('Y-m');
     }
 }

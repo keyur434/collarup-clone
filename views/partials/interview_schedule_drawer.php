@@ -27,11 +27,17 @@
                 </div>
                 <?php if (!config('app')['teams_auto_create_meetings']): ?>
                 <div class="form-group"><label class="form-label">Meeting Link</label><input class="form-control" name="meeting_url" id="d_meeting_url" placeholder="Teams / Zoom / Meet URL"></div>
+                <div class="form-group"><label class="form-label">Meeting host (work email)</label><input type="email" class="form-control" name="organizer_email" id="d_organizer_email" placeholder="Who owns the Teams meeting" value="<?= e(auth_user()['email'] ?? '') ?>"></div>
                 <?php else: ?>
                 <details style="margin-top:8px;font-size:0.82rem">
                     <summary style="cursor:pointer;color:var(--text-muted)">Use an external meeting link instead</summary>
                     <div class="form-group" style="margin-top:10px">
-                        <input class="form-control" name="meeting_url" id="d_meeting_url" placeholder="Paste Teams link only if not using auto-create">
+                        <input class="form-control" name="meeting_url" id="d_meeting_url" placeholder="Paste Teams join link only if not using auto-create">
+                    </div>
+                    <div class="form-group" style="margin-top:8px">
+                        <label class="form-label">Meeting host (work email)</label>
+                        <input type="email" class="form-control" name="organizer_email" id="d_organizer_email" placeholder="Who owns the Teams meeting" value="<?= e(auth_user()['email'] ?? '') ?>">
+                        <p class="hint" style="margin-top:6px">Required for recording fetch when using a pasted Teams link.</p>
                     </div>
                 </details>
                 <?php endif; ?>

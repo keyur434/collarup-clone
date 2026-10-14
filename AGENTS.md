@@ -1,4 +1,4 @@
-# CollarUp Clone — Agent Context
+# TalentPulse — Agent Context
 
 > Feed this file at the start of a new chat for fast repo familiarization.
 > Last updated: 2026-09-14.
@@ -7,7 +7,7 @@
 
 ## What This Is
 
-AI-powered recruitment platform (CollarUp clone). PHP 7.3.4+ MVC app with MSSQL, Microsoft SSO, OneDrive/Graph for video storage, ElevenLabs STT, Azure OpenAI for interview analysis.
+AI-powered recruitment platform (TalentPulse). PHP 7.3.4+ MVC app with MSSQL, Microsoft SSO, OneDrive/Graph for video storage, ElevenLabs STT, Azure OpenAI for interview analysis.
 
 **Not** a framework — custom lightweight MVC. No Composer, no ORM, no Models layer.
 
@@ -29,7 +29,7 @@ AI-powered recruitment platform (CollarUp clone). PHP 7.3.4+ MVC app with MSSQL,
 ## Directory Layout
 
 ```
-collarup-clone/
+talentpulse/   # repo folder name may differ on disk; web root is public/
 ├── public/                  # Web root (index.php entry point)
 │   ├── index.php            # All routes defined here
 │   ├── assets/css|js/       # Static frontend

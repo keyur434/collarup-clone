@@ -38,6 +38,13 @@ class QueueService
                 'status' => 'completed',
                 'completed_at' => date('Y-m-d H:i:s'),
             ], 'id = :id', ['id' => $job['id']]);
+        } catch (QueueRescheduleException $e) {
+            db()->update('job_queue', [
+                'status' => 'pending',
+                'error_message' => $e->getMessage(),
+                'available_at' => $e->getAvailableAtUtc(),
+            ], 'id = :id', ['id' => $job['id']]);
+            return true;
         } catch (Exception $e) {
             $attempts = $job['attempts'] + 1;
             $status = $attempts >= $job['max_attempts'] ? 'failed' : 'pending';
@@ -51,7 +58,7 @@ class QueueService
             if ($status === 'failed' && !empty($payload['interview_id'])) {
                 InterviewWorkflowService::markFailed($payload['interview_id'], $e->getMessage());
             }
-            return false;
+            return true;
         }
 
         return true;
@@ -79,10 +86,30 @@ class QueueService
 
     public function processAll($limit = 10)
     {
+        $this->releaseStuckJobs(45);
         $processed = 0;
         while ($processed < $limit && $this->processNext()) {
             $processed++;
         }
+        InterviewWorkflowService::healStuckProcessingInterviews();
         return $processed;
+    }
+
+    /** Jobs left in processing after a worker crash. */
+    public function releaseStuckJobs($minutes = 45)
+    {
+        $minutes = max(5, (int) $minutes);
+        try {
+            db()->query(
+                "UPDATE job_queue SET status = 'pending',
+                    error_message = CONCAT(ISNULL(error_message, N''), N' [released stuck job]'),
+                    available_at = SYSUTCDATETIME()
+                 WHERE status = 'processing'
+                   AND started_at IS NOT NULL
+                   AND started_at < DATEADD(minute, ?, SYSUTCDATETIME())",
+                [-$minutes]
+            );
+        } catch (Exception $e) {
+        }
     }
 }

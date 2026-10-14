@@ -135,4 +135,119 @@ class InterviewWorkflowService
         }
         return false;
     }
+
+    /**
+     * UI hint for interviews stuck in processing (no report yet).
+     */
+    public static function processingHint(array $interview)
+    {
+        $id = $interview['id'];
+        $report = db()->fetch('SELECT id FROM interview_reports WHERE interview_id = ?', [$id]);
+        if ($report) {
+            return ['code' => 'report_ready', 'message' => 'Report exists — refresh the page.'];
+        }
+
+        $media = db()->fetch(
+            'SELECT TOP 1 blob_name, processing_status FROM interview_media WHERE interview_id = ? ORDER BY id DESC',
+            [$id]
+        );
+        $hasVideo = $media && !empty($media['blob_name']);
+
+        $job = db()->fetch(
+            "SELECT TOP 1 job_type, status, error_message FROM job_queue
+             WHERE payload LIKE ? AND status IN ('pending', 'processing')
+             ORDER BY id DESC",
+            ['%' . $id . '%']
+        );
+
+        if ($job) {
+            $msg = 'Background job ' . $job['job_type'] . ' (' . $job['status'] . ')';
+            if (!empty($job['error_message'])) {
+                $msg .= ' — ' . mb_substr(trim($job['error_message']), 0, 120);
+            }
+            return ['code' => 'queued', 'message' => $msg, 'can_retry_analyze' => false, 'can_sync_recording' => false];
+        }
+
+        if (!$hasVideo) {
+            $rfs = $interview['recording_fetch_state'] ?? '';
+            return [
+                'code' => 'no_video',
+                'message' => 'No recording in system yet. Sync Teams recording or upload video.',
+                'can_retry_analyze' => false,
+                'can_sync_recording' => true,
+            ];
+        }
+
+        $failed = db()->fetch(
+            "SELECT TOP 1 error_message FROM job_queue
+             WHERE payload LIKE ? AND status = 'failed' ORDER BY id DESC",
+            ['%' . $id . '%']
+        );
+        $rfs = $interview['recording_fetch_state'] ?? '';
+        $msg = 'Video ready but analysis did not finish.';
+        if ($failed && !empty($failed['error_message'])) {
+            $msg .= ' Last error: ' . mb_substr(trim($failed['error_message']), 0, 160);
+        } else {
+            $msg .= ' Queue worker may be stopped — use Retry analysis.';
+        }
+
+        return [
+            'code' => 'stuck_analyze',
+            'message' => $msg,
+            'can_retry_analyze' => true,
+            'can_sync_recording' => $rfs === 'failed',
+        ];
+    }
+
+    public static function requeueAnalyze($interviewId)
+    {
+        $media = db()->fetch(
+            'SELECT TOP 1 id, blob_name FROM interview_media WHERE interview_id = ? ORDER BY id DESC',
+            [$interviewId]
+        );
+        if (!$media || empty($media['blob_name'])) {
+            throw new RuntimeException('No video on file. Sync Teams recording or upload video first.');
+        }
+
+        db()->query(
+            "UPDATE job_queue SET status = 'failed', error_message = N'superseded by requeue'
+             WHERE status IN ('pending', 'processing') AND job_type = 'AnalyzeInterview'
+               AND payload LIKE ?",
+            ['%' . $interviewId . '%']
+        );
+
+        self::markProcessing($interviewId);
+        $queue = new QueueService();
+        $queue->push('AnalyzeInterview', ['interview_id' => $interviewId]);
+        return true;
+    }
+
+    /** Re-queue analysis when processing with video but no active queue job. */
+    public static function healStuckProcessingInterviews($limit = 10)
+    {
+        $rows = db()->fetchAll(
+            "SELECT TOP " . (int) $limit . " i.id
+             FROM interviews i
+             WHERE i.status = 'processing'
+               AND NOT EXISTS (SELECT 1 FROM interview_reports ir WHERE ir.interview_id = i.id)
+               AND EXISTS (
+                   SELECT 1 FROM interview_media im
+                   WHERE im.interview_id = i.id AND im.blob_name IS NOT NULL AND LTRIM(RTRIM(im.blob_name)) <> ''
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM job_queue jq
+                   WHERE jq.status IN ('pending', 'processing')
+                     AND jq.payload LIKE '%' + i.id + '%'
+               )"
+        );
+        $n = 0;
+        foreach ($rows as $row) {
+            try {
+                self::requeueAnalyze($row['id']);
+                $n++;
+            } catch (Exception $e) {
+            }
+        }
+        return $n;
+    }
 }

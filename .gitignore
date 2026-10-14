@@ -2,10 +2,17 @@ storage/temp/*
 storage/logs/*
 storage/videos/*
 storage/resumes/*
+poppler-*/
+tools/poppler/bin/*
+!tools/poppler/bin/.gitkeep
+!tools/poppler/README.md
 .env
 .env.local
 .env.*.local
 *.log
+
+# Ad-hoc SQL — never commit (may contain org-specific data)
+database/scripts/
 
 # Local scripts with credentials — never commit
 local_call_pipeline*.py

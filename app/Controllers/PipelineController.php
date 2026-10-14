@@ -57,6 +57,7 @@ class PipelineController
                      LEFT JOIN interviews i ON i.application_id = a.id AND i.stage_id = a.current_stage_id
 
                      WHERE a.job_id = ? AND a.current_stage_id = ?
+                       AND (a.is_archived = 0 OR a.is_archived IS NULL)
 
                      ORDER BY a.updated_at DESC",
 

@@ -1,9 +1,27 @@
-<?php $pageBack = ['url' => url('candidates'), 'label' => 'Candidates']; ?>
+<?php $breadcrumbs = nav_trail_dashboard('Candidates'); ?>
 
 <!-- Toolbar -->
 <div class="toolbar" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
     <form method="GET" style="display:contents" id="candidateFilterForm">
         <?php if (!empty($showArchived)): ?><input type="hidden" name="show_archived" value="1"><?php endif; ?>
+        <select name="scope" class="filter-select" onchange="this.form.submit()">
+            <option value="" <?= empty($scope) ? 'selected' : '' ?>>All candidates</option>
+            <option value="mine" <?= ($scope ?? '') === 'mine' ? 'selected' : '' ?>>My candidates only</option>
+        </select>
+        <select name="order" class="filter-select" onchange="this.form.submit()">
+            <option value="created_desc" <?= ($order ?? 'created_desc') === 'created_desc' ? 'selected' : '' ?>>Newest first</option>
+            <option value="name" <?= ($order ?? '') === 'name' ? 'selected' : '' ?>>Candidate name</option>
+            <option value="recruiter" <?= ($order ?? '') === 'recruiter' ? 'selected' : '' ?>>Recruiter / HR</option>
+            <option value="job" <?= ($order ?? '') === 'job' ? 'selected' : '' ?>>Job role</option>
+        </select>
+        <?php if (!empty($teamUsers)): ?>
+        <select name="recruiter_id" class="filter-select" onchange="this.form.submit()">
+            <option value="">All recruiters</option>
+            <?php foreach ($teamUsers as $u): ?>
+            <option value="<?= (int) $u['id'] ?>" <?= (isset($_GET['recruiter_id']) && (int) $_GET['recruiter_id'] === (int) $u['id']) ? 'selected' : '' ?>><?= e(user_display_name($u['first_name'], $u['last_name'])) ?></option>
+            <?php endforeach; ?>
+        </select>
+        <?php endif; ?>
         <select name="department_id" class="filter-select" onchange="this.form.submit()">
             <option value="">Departme...</option>
             <?php foreach ($departments as $d): ?>
@@ -13,7 +31,7 @@
         <select name="job_id" class="filter-select" onchange="this.form.submit()">
             <option value="">Job Role</option>
             <?php foreach ($jobs as $j): ?>
-            <option value="<?= $j['id'] ?>" <?= (isset($_GET['job_id']) && $_GET['job_id']==$j['id'])?'selected':'' ?>><?= e($j['title']) ?></option>
+            <option value="<?= $j['id'] ?>" <?= (isset($_GET['job_id']) && $_GET['job_id']==$j['id'])?'selected':'' ?>><?= e(job_select_option_label($j)) ?></option>
             <?php endforeach; ?>
         </select>
         <select name="stage" class="filter-select" onchange="this.form.submit()">
@@ -63,23 +81,24 @@
 <!-- Table -->
 <div class="table-wrap">
     <div class="table-scroll">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
                     <?php if (!empty($canBulkManage)): ?><th style="width:36px"><input type="checkbox" id="selectAllCandidates"></th><?php endif; ?>
-                    <th>Candidate Name</th>
-                    <th>Job Role</th>
-                    <th>Department</th>
-                    <th>Stage</th>
-                    <th>Status</th>
-                    <th>Date &amp; Time</th>
-                    <th>Candidate score</th>
+                    <?= th_sort('Candidate Name', 'string') ?>
+                    <?= th_sort('Job Role', 'string') ?>
+                    <?= th_sort('Recruiter / HR', 'string') ?>
+                    <?= th_sort('Department', 'string') ?>
+                    <?= th_sort('Stage', 'string') ?>
+                    <?= th_sort('Status', 'string') ?>
+                    <?= th_sort('Date & Time', 'date') ?>
+                    <?= th_sort('Candidate score', 'number') ?>
                     <th>Action</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($candidates)): ?>
-                <tr><td colspan="<?= !empty($canBulkManage) ? 9 : 8 ?>" class="empty-state">No candidates found.</td></tr>
+                <tr><td colspan="<?= !empty($canBulkManage) ? 10 : 9 ?>" class="empty-state">No candidates found.</td></tr>
                 <?php else: foreach ($candidates as $c):
                     $sl = $c['overall_score'] ? score_label($c['overall_score']) : null;
                 ?>
@@ -99,14 +118,15 @@
                         </div>
                     </td>
                     <td data-label="Job Role"><span style="color:var(--primary);font-weight:500"><?= e($c['job_title']) ?></span></td>
+                    <td data-label="Recruiter / HR"><?= e(user_display_name($c['recruiter_first_name'] ?? '', $c['recruiter_last_name'] ?? '')) ?></td>
                     <td data-label="Department"><?= e($c['department_name']) ?></td>
                     <td data-label="Stage"><?= e($c['stage_name']) ?></td>
                     <td data-label="Status"><span class="badge badge-<?= e($c['status']) ?>"><?= e(ucfirst($c['status'])) ?></span></td>
-                    <td data-label="Date &amp; Time" style="white-space:nowrap;font-size:0.82rem">
+                    <td data-label="Date &amp; Time" style="white-space:nowrap;font-size:0.82rem" data-sort-value="<?= e($c['scheduled_date'] ?? '') ?>">
                         <?= $c['scheduled_date'] ? format_date($c['scheduled_date']) : '–' ?>
-                        <?= ($c['scheduled_start'] && $c['scheduled_end']) ? ' · ' . format_time($c['scheduled_start']) . '–' . format_time($c['scheduled_end']) : '' ?>
+                        <?= format_interview_time_range($c['scheduled_start'] ?? null, $c['scheduled_end'] ?? null) ?>
                     </td>
-                    <td data-label="Score">
+                    <td data-label="Score" data-sort-value="<?= sort_data_val($c['overall_score'] ?? '') ?>">
                         <?php if ($sl): ?>
                         <span class="score-badge <?= e($sl['class'] === 'score-good' ? 'good' : ($sl['class'] === 'score-average' ? 'avg' : 'poor')) ?>">
                             <?= e($c['overall_score']) ?> <?= e($sl['label']) ?>
@@ -137,27 +157,7 @@
             </tbody>
         </table>
     </div>
-    <div class="table-footer">
-        <div class="items-per-page">
-            Items per page
-            <select onchange="window.location=this.value">
-                <option value="?perPage=15">15</option>
-                <option value="?perPage=25">25</option>
-                <option value="?perPage=50">50</option>
-            </select>
-        </div>
-        <?php if (isset($pagination)): ?>
-        <div class="pagination">
-            <?php if ($pagination['prev']): ?><a href="?page=<?= $pagination['prev'] ?>">&#8249;</a><?php else: ?><span style="opacity:.4">&#8249;</span><?php endif; ?>
-            <?php foreach ($pagination['pages'] as $p): ?>
-                <?php if ($p === '...'): ?><span class="ellipsis">…</span>
-                <?php elseif ($p == $pagination['current']): ?><a class="active"><?= $p ?></a>
-                <?php else: ?><a href="?page=<?= $p ?>"><?= $p ?></a><?php endif; ?>
-            <?php endforeach; ?>
-            <?php if ($pagination['next']): ?><a href="?page=<?= $pagination['next'] ?>">&#8250;</a><?php else: ?><span style="opacity:.4">&#8250;</span><?php endif; ?>
-        </div>
-        <?php endif; ?>
-    </div>
+    <?php $perPageOptions = [15, 25, 50, 100]; include BASE_PATH . '/views/partials/table_pagination.php'; ?>
 </div>
 <?php if (!empty($canBulkManage)): ?>
 </form>
